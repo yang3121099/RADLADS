@@ -651,7 +651,7 @@ class TMix_qwen2rwkv6(TMix_qwen2):
             dxprev = torch.nn.functional.pad(x, (0, 0, 1, -1)) - x
 
             xxx = x + dxprev * self.time_maa_x
-            xxx = torch.tanh(xxx @ self.time_maa_w1).view(bsz*q_len, self.time_maa_w2.size(0), -1).transpose(0, 1)
+            xxx = torch.tanh(xxx @ self.time_maa_w1).view(bsz*q_len, self.time_maa_w2.size(0), -1).transpose(0, 1).contiguous()
             xxx = torch.bmm(xxx, self.time_maa_w2).view(self.time_maa_w2.size(0), bsz, q_len, hidden_dim)
 
             mr, mk, mv, mw, mg = xxx.unbind(dim=0)
