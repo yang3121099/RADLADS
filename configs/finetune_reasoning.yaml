@@ -1,0 +1,35 @@
+model:
+  ctx_len: 4096
+
+train:
+  wandb: reasoning_ft
+
+  proj_suffix: reasoning
+  train_stage: 3
+  load_partial: 0
+
+  data_type: "binidx"
+  data_file: "data/OpenR1-Math-220k"  # update after running prepare_reasoning_data.py
+  my_exit_tokens: 100000000            # update from data/*_params.txt
+  magic_prime: 1                       # update from data/*_params.txt
+
+  optimizer: adamw
+  lr_decay_type: cos
+  lr_init: 2e-5
+  lr_final: 2e-6
+  warmup_steps: 100
+  beta1: 0.9
+  beta2: 0.95
+  adam_eps: 1e-8
+  weight_decay: 0.01
+
+  devices: 1
+  num_nodes: 1
+  micro_bsz: 1
+  accumulate_grad_batches: 8  # effective batch size = 8
+  strategy: deepspeed_stage_1
+  grad_cp: 1
+  precision: bf16
+  ds_bucket_mb: 2  # use 2 for consumer GPUs, 200 for A100/H100
+
+  epoch_save: 1
