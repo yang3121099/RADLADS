@@ -17,14 +17,14 @@ set -e
 
 # === 配置 (按需修改) ===
 DATASET="open-r1/OpenR1-Math-220k"     # HuggingFace 数据集
-CTX_LEN=2048                            # 上下文长度 (4096 容易 OOM，降到 2048)
+CTX_LEN=4096                            # 上下文长度 (4卡可以用 4096)
 MAX_TOKENS=200000000                    # 最大处理 token 数 (200M)
 MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-3.pth"  # 基础模型 checkpoint
-NUM_DEVICES=1                           # GPU 数量
-MICRO_BSZ=1                             # 单卡 batch size (OOM 则保持 1)
+NUM_DEVICES=4                           # GPU 数量
+MICRO_BSZ=2                             # 单卡 batch size (4卡140GB足够)
 PRECISION="bf16"                        # bf16 / 16 / 32
-STRATEGY="deepspeed_stage_1"            # 单卡不需要 stage_2
-OPTIMIZER="adam8bit"                    # 8-bit optimizer 省 ~42GB 显存
+STRATEGY="deepspeed_stage_2"            # ZeRO-2: 优化器状态分片到4卡
+OPTIMIZER="adamw"                       # 4卡够用 adamw 全精度
 
 # === 自动推导 ===
 DATASET_BASENAME=$(basename $DATASET)
@@ -63,9 +63,10 @@ prepare_data() {
 train_model() {
     echo ""
     echo "=========================================="
-    echo " Step 2: Training"
+    echo " Step 2: Training (${NUM_DEVICES}x GPU)"
     echo " Model: $MODEL_CKPT"
     echo " Data:  ${DATA_PREFIX}"
+    echo " Strategy: $STRATEGY"
     echo "=========================================="
 
     if [ ! -f "$PARAMS_FILE" ]; then
@@ -104,13 +105,14 @@ case "${1:-help}" in
     train)   train_model ;;
     all)     prepare_data && train_model ;;
     *)
-        echo "RADLADS Reasoning 训练脚本"
+        echo "RADLADS Reasoning 训练脚本 (多卡版)"
         echo ""
         echo "用法:"
         echo "  bash train_reasoning.sh prep    — 下载并预处理数据"
         echo "  bash train_reasoning.sh train   — 开始训练"
         echo "  bash train_reasoning.sh all     — 一键执行"
         echo ""
+        echo "当前配置: ${NUM_DEVICES}卡, $STRATEGY, $OPTIMIZER, ctx${CTX_LEN}"
         echo "可选: 修改脚本头部的配置项来切换数据集或模型"
         ;;
 esac
