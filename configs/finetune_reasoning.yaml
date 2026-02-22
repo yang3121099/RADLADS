@@ -14,7 +14,7 @@ train:
   my_exit_tokens: 100000000            # update from data/*_params.txt
   magic_prime: 1                       # update from data/*_params.txt
 
-  optimizer: adamw
+  optimizer: adam8bit
   lr_decay_type: cos
   lr_init: 2e-5
   lr_final: 2e-6
@@ -28,7 +28,7 @@ train:
   num_nodes: 1
   micro_bsz: 1
   accumulate_grad_batches: 8  # effective batch size = 8
-  strategy: deepspeed_stage_2
+  strategy: deepspeed_stage_1
   grad_cp: 1
   precision: bf16
   ds_bucket_mb: 2  # use 2 for consumer GPUs, 200 for A100/H100

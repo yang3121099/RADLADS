@@ -23,7 +23,8 @@ MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-3.pth"  # 基础模型 checkpoint
 NUM_DEVICES=1                           # GPU 数量
 MICRO_BSZ=1                             # 单卡 batch size (OOM 则保持 1)
 PRECISION="bf16"                        # bf16 / 16 / 32
-STRATEGY="deepspeed_stage_2"            # stage_2 比 stage_1 更省显存
+STRATEGY="deepspeed_stage_1"            # 单卡不需要 stage_2
+OPTIMIZER="adam8bit"                    # 8-bit optimizer 省 ~42GB 显存
 
 # === 自动推导 ===
 DATASET_BASENAME=$(basename $DATASET)
@@ -91,6 +92,7 @@ train_model() {
         --train.micro_bsz $MICRO_BSZ \
         --train.precision $PRECISION \
         --train.strategy $STRATEGY \
+        --train.optimizer $OPTIMIZER \
         --model.attention_type gla
 }
 
