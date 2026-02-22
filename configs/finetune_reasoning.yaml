@@ -24,10 +24,10 @@ train:
   adam_eps: 1e-8
   weight_decay: 0.01
 
-  devices: 4
+  devices: 2
   num_nodes: 1
-  micro_bsz: 2
-  accumulate_grad_batches: 2  # effective batch size = 4*2*2 = 16
+  micro_bsz: 1
+  accumulate_grad_batches: 8  # effective batch size = 2*1*8 = 16
   strategy: deepspeed_stage_2
   grad_cp: 1
   precision: bf16
