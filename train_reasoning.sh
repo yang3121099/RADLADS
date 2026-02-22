@@ -17,12 +17,13 @@ set -e
 
 # === 配置 (按需修改) ===
 DATASET="open-r1/OpenR1-Math-220k"     # HuggingFace 数据集
-CTX_LEN=4096                            # 上下文长度
+CTX_LEN=2048                            # 上下文长度 (4096 容易 OOM，降到 2048)
 MAX_TOKENS=200000000                    # 最大处理 token 数 (200M)
 MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-3.pth"  # 基础模型 checkpoint
 NUM_DEVICES=1                           # GPU 数量
 MICRO_BSZ=1                             # 单卡 batch size (OOM 则保持 1)
 PRECISION="bf16"                        # bf16 / 16 / 32
+STRATEGY="deepspeed_stage_2"            # stage_2 比 stage_1 更省显存
 
 # === 自动推导 ===
 DATASET_BASENAME=$(basename $DATASET)
@@ -89,6 +90,7 @@ train_model() {
         --train.devices $NUM_DEVICES \
         --train.micro_bsz $MICRO_BSZ \
         --train.precision $PRECISION \
+        --train.strategy $STRATEGY \
         --model.attention_type gla
 }
 

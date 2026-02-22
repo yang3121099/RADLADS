@@ -1,5 +1,5 @@
 model:
-  ctx_len: 4096
+  ctx_len: 2048
   attention_type: gla
 
 train:
@@ -28,7 +28,7 @@ train:
   num_nodes: 1
   micro_bsz: 1
   accumulate_grad_batches: 8  # effective batch size = 8
-  strategy: deepspeed_stage_1
+  strategy: deepspeed_stage_2
   grad_cp: 1
   precision: bf16
   ds_bucket_mb: 2  # use 2 for consumer GPUs, 200 for A100/H100
