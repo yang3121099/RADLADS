@@ -71,6 +71,9 @@ if __name__ == "__main__":
     assert config.train.train_stage >= -1
 
     EPOCH_SAMPLE_SIZE = 40320
+    # If data is smaller than default epoch size, shrink to fit actual data
+    if config.train.magic_prime > 0 and config.train.magic_prime < EPOCH_SAMPLE_SIZE:
+        EPOCH_SAMPLE_SIZE = (config.train.magic_prime // runtime_config.global_step_bsz) * runtime_config.global_step_bsz
     runtime_config.epoch_count = max(1, config.train.magic_prime // EPOCH_SAMPLE_SIZE)
 
     runtime_config.epoch_global_steps = EPOCH_SAMPLE_SIZE // runtime_config.global_step_bsz
