@@ -18,7 +18,7 @@ set -e
 # === 配置 (按需修改) ===
 DATASET="open-r1/OpenR1-Math-220k"     # HuggingFace 数据集
 CTX_LEN=4096                            # 上下文长度 (4卡可以用 4096)
-MAX_TOKENS=200000000                    # 最大处理 token 数 (200M)
+MAX_TOKENS=20000000                     # 最大处理 token 数 (20M, 原200M的1/10)
 MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-3.pth"  # 基础模型 checkpoint
 NUM_DEVICES=2                           # GPU 数量
 MICRO_BSZ=1                             # 单卡 batch size
