@@ -1,5 +1,6 @@
 model:
   ctx_len: 4096
+  attention_type: gla
 
 train:
   wandb: reasoning_ft

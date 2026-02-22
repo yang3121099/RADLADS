@@ -88,7 +88,8 @@ train_model() {
         --model.ctx_len $ctx_len \
         --train.devices $NUM_DEVICES \
         --train.micro_bsz $MICRO_BSZ \
-        --train.precision $PRECISION
+        --train.precision $PRECISION \
+        --model.attention_type gla
 }
 
 # ============================================================================
