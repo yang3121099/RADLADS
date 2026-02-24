@@ -9,36 +9,99 @@
 #   4. bespokelabs/Bespoke-Stratos-17k — 17k 高质量多样推理
 #
 # 用法:
-#   bash train_reasoning.sh prep      # Step 1: 准备数据
-#   bash train_reasoning.sh train     # Step 2: 开始训练
-#   bash train_reasoning.sh all       # 一键执行全部
+#   bash train_reasoning.sh prep                          # 准备数据 (默认配置)
+#   bash train_reasoning.sh train                         # 开始训练
+#   bash train_reasoning.sh all                           # 一键执行
+#
+#   # 自定义参数 (环境变量):
+#   MAX_TOKENS=20000000 MODEL_CKPT=./ckpt/xxx.pth bash train_reasoning.sh all
+#   MAX_TOKENS=200000000 DATASET=open-thoughts/OpenThoughts-114k bash train_reasoning.sh all
+#
+#   # 快捷方式:
+#   bash train_reasoning.sh all 20M model2                # 20M tokens + model2
+#   bash train_reasoning.sh all 200M model3               # 200M tokens + model3
 # ============================================================================
 set -e
 
-# === 配置 (按需修改) ===
-DATASET="open-r1/OpenR1-Math-220k"     # HuggingFace 数据集
-CTX_LEN=4096                            # 上下文长度 (4卡可以用 4096)
-MAX_TOKENS=20000000                     # 最大处理 token 数 (20M, 原200M的1/10)
-MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-3.pth"  # 基础模型 checkpoint
-NUM_DEVICES=2                           # GPU 数量
-MICRO_BSZ=1                             # 单卡 batch size
-PRECISION="bf16"                        # bf16 / 16 / 32
-STRATEGY="deepspeed_stage_2"            # ZeRO-2: 优化器状态分片到4卡
-OPTIMIZER="adamw"                       # 4卡够用 adamw 全精度
+# === 默认配置 (可通过环境变量覆盖) ===
+DATASET="${DATASET:-open-r1/OpenR1-Math-220k}"
+CTX_LEN="${CTX_LEN:-4096}"
+MAX_TOKENS="${MAX_TOKENS:-20000000}"
+MODEL_CKPT="${MODEL_CKPT:-./ckpt/L28-D3584-qwen2-rwkv6-3.pth}"
+NUM_DEVICES="${NUM_DEVICES:-2}"
+MICRO_BSZ="${MICRO_BSZ:-1}"
+PRECISION="${PRECISION:-bf16}"
+STRATEGY="${STRATEGY:-deepspeed_stage_2}"
+OPTIMIZER="${OPTIMIZER:-adamw}"
 
-# === 自动推导 ===
-DATASET_BASENAME=$(basename $DATASET)
-DATA_PREFIX="data/${DATASET_BASENAME}"
+# === 解析快捷参数 ===
+# 支持: bash train_reasoning.sh all 20M model2
+for arg in "${@:2}"; do
+    case "$arg" in
+        *[Mm])  # e.g. 20M, 200m
+            num="${arg%[Mm]}"
+            MAX_TOKENS=$((num * 1000000))
+            ;;
+        model2)
+            MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-2.pth"
+            ;;
+        model3)
+            MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-3.pth"
+            ;;
+    esac
+done
+
+# === 自动推导命名 ===
+DATASET_BASENAME=$(basename "$DATASET")
+
+# 数据量标签: 20000000 -> 20M, 200000000 -> 200M
+if [ "$MAX_TOKENS" -ge 1000000000 ]; then
+    TOKEN_LABEL="$((MAX_TOKENS / 1000000000))B"
+elif [ "$MAX_TOKENS" -ge 1000000 ]; then
+    TOKEN_LABEL="$((MAX_TOKENS / 1000000))M"
+else
+    TOKEN_LABEL="${MAX_TOKENS}"
+fi
+
+# 基础模型标签: ./ckpt/L28-D3584-qwen2-rwkv6-2.pth -> rwkv6-2
+MODEL_BASENAME=$(basename "$MODEL_CKPT" .pth)
+MODEL_TAG=$(echo "$MODEL_BASENAME" | grep -oP 'rwkv6-\d+' || echo "$MODEL_BASENAME")
+
+# 数据路径带数据量后缀: data/OpenR1-Math-220k-20M
+DATA_PREFIX="data/${DATASET_BASENAME}-${TOKEN_LABEL}"
 PARAMS_FILE="${DATA_PREFIX}_params.txt"
+
+# 训练输出后缀: reasoning-rwkv6-2-OpenR1-Math-220k-20M
+PROJ_SUFFIX="reasoning-${MODEL_TAG}-${DATASET_BASENAME}-${TOKEN_LABEL}"
+
+echo "============================================"
+echo " Config:"
+echo "   Dataset:    $DATASET"
+echo "   Tokens:     $MAX_TOKENS ($TOKEN_LABEL)"
+echo "   Model:      $MODEL_CKPT ($MODEL_TAG)"
+echo "   Data path:  ${DATA_PREFIX}.bin"
+echo "   Output:     out/L28-D3584-qwerky6_qwen2-${PROJ_SUFFIX}/"
+echo "   Devices:    $NUM_DEVICES"
+echo "============================================"
 
 # ============================================================================
 # Step 1: 准备数据
 # ============================================================================
 prepare_data() {
+    echo ""
     echo "=========================================="
     echo " Step 1: Preparing reasoning data"
     echo " Dataset: $DATASET"
+    echo " Tokens:  $MAX_TOKENS ($TOKEN_LABEL)"
+    echo " Output:  ${DATA_PREFIX}.bin"
     echo "=========================================="
+
+    # 如果数据已存在，跳过
+    if [ -f "$PARAMS_FILE" ] && [ -f "${DATA_PREFIX}.bin" ]; then
+        echo "[SKIP] Data already exists at ${DATA_PREFIX}.bin"
+        cat "$PARAMS_FILE"
+        return 0
+    fi
 
     python prepare_reasoning_data.py \
         --dataset "$DATASET" \
@@ -64,9 +127,9 @@ train_model() {
     echo ""
     echo "=========================================="
     echo " Step 2: Training (${NUM_DEVICES}x GPU)"
-    echo " Model: $MODEL_CKPT"
-    echo " Data:  ${DATA_PREFIX}"
-    echo " Strategy: $STRATEGY"
+    echo " Model:   $MODEL_CKPT"
+    echo " Data:    ${DATA_PREFIX}"
+    echo " Output:  out/L28-D3584-qwerky6_qwen2-${PROJ_SUFFIX}/"
     echo "=========================================="
 
     if [ ! -f "$PARAMS_FILE" ]; then
@@ -79,6 +142,13 @@ train_model() {
     echo " my_exit_tokens = $my_exit_tokens"
     echo " magic_prime    = $magic_prime"
     echo " ctx_len        = $ctx_len"
+
+    # Model 2 需要指定旧的 lora ranks
+    LORA_ARGS=""
+    if echo "$MODEL_CKPT" | grep -q "rwkv6-2"; then
+        LORA_ARGS="--model.lora_rank_tokenshift 32 --model.lora_rank_decay 64"
+        echo " lora_ranks     = tokenshift=32, decay=64 (model2)"
+    fi
 
     RWKV_TORCH_COMPILE=0 RWKV_JIT_ON=0 python train.py \
         -c configs/qwen7b.yaml \
@@ -94,7 +164,9 @@ train_model() {
         --train.precision $PRECISION \
         --train.strategy $STRATEGY \
         --train.optimizer $OPTIMIZER \
-        --model.attention_type gla
+        --train.proj_suffix "$PROJ_SUFFIX" \
+        --model.attention_type gla \
+        $LORA_ARGS
 }
 
 # ============================================================================
@@ -105,14 +177,22 @@ case "${1:-help}" in
     train)   train_model ;;
     all)     prepare_data && train_model ;;
     *)
-        echo "RADLADS Reasoning 训练脚本 (多卡版)"
+        echo "RADLADS Reasoning 训练脚本"
         echo ""
         echo "用法:"
         echo "  bash train_reasoning.sh prep    — 下载并预处理数据"
         echo "  bash train_reasoning.sh train   — 开始训练"
         echo "  bash train_reasoning.sh all     — 一键执行"
         echo ""
+        echo "快捷参数 (在 prep/train/all 后面追加):"
+        echo "  20M / 200M          — 设置数据量"
+        echo "  model2 / model3     — 选择基础模型"
+        echo ""
+        echo "示例:"
+        echo "  bash train_reasoning.sh all 20M model2"
+        echo "  bash train_reasoning.sh all 200M model3"
+        echo "  MAX_TOKENS=50000000 bash train_reasoning.sh all"
+        echo ""
         echo "当前配置: ${NUM_DEVICES}卡, $STRATEGY, $OPTIMIZER, ctx${CTX_LEN}"
-        echo "可选: 修改脚本头部的配置项来切换数据集或模型"
         ;;
 esac
