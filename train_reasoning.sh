@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# RADLADS Reasoning 训练脚本
+# RADLADS Reasoning 训练脚本 (支持 RWKV6 + RWKV7)
 #
 # 数据集推荐 (按优先级):
 #   1. open-r1/OpenR1-Math-220k      — 220k 数学推理 (R1 traces, ~800k 推理链)
@@ -9,17 +9,14 @@
 #   4. bespokelabs/Bespoke-Stratos-17k — 17k 高质量多样推理
 #
 # 用法:
-#   bash train_reasoning.sh prep                          # 准备数据 (默认配置)
-#   bash train_reasoning.sh train                         # 开始训练
-#   bash train_reasoning.sh all                           # 一键执行
+#   bash train_reasoning.sh all 20M v6-model2       # RWKV6 Model 2 + 20M
+#   bash train_reasoning.sh all 20M v6-model3       # RWKV6 Model 3 + 20M
+#   bash train_reasoning.sh all 20M v7-model2       # RWKV7 Model 2 + 20M
+#   bash train_reasoning.sh all 20M v7-model3       # RWKV7 Model 3 + 20M
+#   bash train_reasoning.sh all 200M v7-model3      # RWKV7 Model 3 + 200M
 #
-#   # 自定义参数 (环境变量):
-#   MAX_TOKENS=20000000 MODEL_CKPT=./ckpt/xxx.pth bash train_reasoning.sh all
-#   MAX_TOKENS=200000000 DATASET=open-thoughts/OpenThoughts-114k bash train_reasoning.sh all
-#
-#   # 快捷方式:
-#   bash train_reasoning.sh all 20M model2                # 20M tokens + model2
-#   bash train_reasoning.sh all 200M model3               # 200M tokens + model3
+#   # 环境变量方式:
+#   MODEL_CKPT=./ckpt/xxx.pth bash train_reasoning.sh all 20M
 # ============================================================================
 set -e
 
@@ -35,26 +32,42 @@ STRATEGY="${STRATEGY:-deepspeed_stage_2}"
 OPTIMIZER="${OPTIMIZER:-adamw}"
 
 # === 解析快捷参数 ===
-# 支持: bash train_reasoning.sh all 20M model2
 for arg in "${@:2}"; do
     case "$arg" in
         *[Mm])  # e.g. 20M, 200m
             num="${arg%[Mm]}"
             MAX_TOKENS=$((num * 1000000))
             ;;
-        model2)
+        v6-model2|model2)
             MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-2.pth"
             ;;
-        model3)
+        v6-model3|model3)
             MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv6-3.pth"
+            ;;
+        v7-model2)
+            MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv7-2.pth"
+            ;;
+        v7-model3)
+            MODEL_CKPT="./ckpt/L28-D3584-qwen2-rwkv7-3.pth"
             ;;
     esac
 done
 
+# === 自动检测 RWKV6 vs RWKV7 ===
+if echo "$MODEL_CKPT" | grep -q "rwkv7"; then
+    ARCH="rwkv7"
+    ARCH_CONFIG="configs/qwerky7.yaml"
+    ATTN_TYPE="rwkv7_fla_fused_recurrent"
+else
+    ARCH="rwkv6"
+    ARCH_CONFIG="configs/qwerky6.yaml"
+    ATTN_TYPE="gla"
+fi
+
 # === 自动推导命名 ===
 DATASET_BASENAME=$(basename "$DATASET")
 
-# 数据量标签: 20000000 -> 20M, 200000000 -> 200M
+# 数据量标签: 20000000 -> 20M
 if [ "$MAX_TOKENS" -ge 1000000000 ]; then
     TOKEN_LABEL="$((MAX_TOKENS / 1000000000))B"
 elif [ "$MAX_TOKENS" -ge 1000000 ]; then
@@ -63,24 +76,26 @@ else
     TOKEN_LABEL="${MAX_TOKENS}"
 fi
 
-# 基础模型标签: ./ckpt/L28-D3584-qwen2-rwkv6-2.pth -> rwkv6-2
+# 模型标签: ./ckpt/L28-D3584-qwen2-rwkv7-2.pth -> rwkv7-2
 MODEL_BASENAME=$(basename "$MODEL_CKPT" .pth)
-MODEL_TAG=$(echo "$MODEL_BASENAME" | grep -oP 'rwkv6-\d+' || echo "$MODEL_BASENAME")
+MODEL_TAG=$(echo "$MODEL_BASENAME" | grep -oP 'rwkv[67]-\d+' || echo "$MODEL_BASENAME")
 
 # 数据路径带数据量后缀: data/OpenR1-Math-220k-20M
 DATA_PREFIX="data/${DATASET_BASENAME}-${TOKEN_LABEL}"
 PARAMS_FILE="${DATA_PREFIX}_params.txt"
 
-# 训练输出后缀: reasoning-rwkv6-2-OpenR1-Math-220k-20M
+# 训练输出后缀: reasoning-rwkv7-2-OpenR1-Math-220k-20M
 PROJ_SUFFIX="reasoning-${MODEL_TAG}-${DATASET_BASENAME}-${TOKEN_LABEL}"
 
 echo "============================================"
 echo " Config:"
+echo "   Arch:       $ARCH ($ARCH_CONFIG)"
+echo "   Attn type:  $ATTN_TYPE"
 echo "   Dataset:    $DATASET"
 echo "   Tokens:     $MAX_TOKENS ($TOKEN_LABEL)"
 echo "   Model:      $MODEL_CKPT ($MODEL_TAG)"
 echo "   Data path:  ${DATA_PREFIX}.bin"
-echo "   Output:     out/L28-D3584-qwerky6_qwen2-${PROJ_SUFFIX}/"
+echo "   Proj suffix: $PROJ_SUFFIX"
 echo "   Devices:    $NUM_DEVICES"
 echo "============================================"
 
@@ -127,9 +142,10 @@ train_model() {
     echo ""
     echo "=========================================="
     echo " Step 2: Training (${NUM_DEVICES}x GPU)"
+    echo " Arch:    $ARCH | Attn: $ATTN_TYPE"
     echo " Model:   $MODEL_CKPT"
     echo " Data:    ${DATA_PREFIX}"
-    echo " Output:  out/L28-D3584-qwerky6_qwen2-${PROJ_SUFFIX}/"
+    echo " Suffix:  $PROJ_SUFFIX"
     echo "=========================================="
 
     if [ ! -f "$PARAMS_FILE" ]; then
@@ -143,16 +159,16 @@ train_model() {
     echo " magic_prime    = $magic_prime"
     echo " ctx_len        = $ctx_len"
 
-    # Model 2 需要指定旧的 lora ranks
+    # RWKV6 Model 2 需要指定旧的 lora ranks
     LORA_ARGS=""
     if echo "$MODEL_CKPT" | grep -q "rwkv6-2"; then
         LORA_ARGS="--model.lora_rank_tokenshift 32 --model.lora_rank_decay 64"
-        echo " lora_ranks     = tokenshift=32, decay=64 (model2)"
+        echo " lora_ranks     = tokenshift=32, decay=64 (rwkv6-model2)"
     fi
 
     RWKV_TORCH_COMPILE=0 RWKV_JIT_ON=0 python train.py \
         -c configs/qwen7b.yaml \
-        -c configs/qwerky6.yaml \
+        -c "$ARCH_CONFIG" \
         -c configs/finetune_reasoning.yaml \
         --train.load_model "$MODEL_CKPT" \
         --train.data_file "$data_file" \
@@ -165,7 +181,7 @@ train_model() {
         --train.strategy $STRATEGY \
         --train.optimizer $OPTIMIZER \
         --train.proj_suffix "$PROJ_SUFFIX" \
-        --model.attention_type gla \
+        --model.attention_type "$ATTN_TYPE" \
         $LORA_ARGS
 }
 
@@ -177,7 +193,7 @@ case "${1:-help}" in
     train)   train_model ;;
     all)     prepare_data && train_model ;;
     *)
-        echo "RADLADS Reasoning 训练脚本"
+        echo "RADLADS Reasoning 训练脚本 (RWKV6 + RWKV7)"
         echo ""
         echo "用法:"
         echo "  bash train_reasoning.sh prep    — 下载并预处理数据"
@@ -185,13 +201,14 @@ case "${1:-help}" in
         echo "  bash train_reasoning.sh all     — 一键执行"
         echo ""
         echo "快捷参数 (在 prep/train/all 后面追加):"
-        echo "  20M / 200M          — 设置数据量"
-        echo "  model2 / model3     — 选择基础模型"
+        echo "  20M / 200M              — 设置数据量"
+        echo "  v6-model2 / v6-model3   — RWKV6 模型"
+        echo "  v7-model2 / v7-model3   — RWKV7 模型"
         echo ""
         echo "示例:"
-        echo "  bash train_reasoning.sh all 20M model2"
-        echo "  bash train_reasoning.sh all 200M model3"
-        echo "  MAX_TOKENS=50000000 bash train_reasoning.sh all"
+        echo "  bash train_reasoning.sh all 20M v6-model2"
+        echo "  bash train_reasoning.sh all 20M v7-model3"
+        echo "  bash train_reasoning.sh all 200M v7-model2"
         echo ""
         echo "当前配置: ${NUM_DEVICES}卡, $STRATEGY, $OPTIMIZER, ctx${CTX_LEN}"
         ;;
