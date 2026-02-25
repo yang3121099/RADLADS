@@ -57,7 +57,7 @@ done
 if echo "$MODEL_CKPT" | grep -q "rwkv7"; then
     ARCH="rwkv7"
     ARCH_CONFIG="configs/qwerky7.yaml"
-    ATTN_TYPE="rwkv7_fla_fused_recurrent"
+    ATTN_TYPE="rwkv7_fla_chunk"
 else
     ARCH="rwkv6"
     ARCH_CONFIG="configs/qwerky6.yaml"
