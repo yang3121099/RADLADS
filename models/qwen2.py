@@ -43,7 +43,7 @@ elif 'rwkv7' in ATTENTION_TYPE or ATTENTION_TYPE == 'rwkv6_wind_backstepping_lon
         from fla.ops.rwkv7.chunk import chunk_rwkv7
         def RUN_CUDA_RWKV7g(r, log_neglog_w, k, v, a, b) -> torch.Tensor:
             log_w = -log_neglog_w.float().exp()
-            return chunk_rwkv7(r=r, w=log_w, k=k, v=v, a=a, b=b, output_final_state=False)[0].to(dtype)
+            return chunk_rwkv7(r=r, w=log_w, k=k, v=v, a=a, b=b, output_final_state=False)[0].to(r.dtype)
     elif ATTENTION_TYPE == 'rwkv7_fla_fused_recurrent':
         from fla.ops.rwkv7.fused_recurrent import fused_recurrent_rwkv7
         def RUN_CUDA_RWKV7g(r, log_neglog_w, k, v, a, b) -> torch.Tensor:
