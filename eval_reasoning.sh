@@ -29,7 +29,7 @@ NUM_GPUS=2                      # 可用 GPU 数量
 # === 任务集 ===
 # 全部使用 loglikelihood 类任务，可以大 batch，无 CUBLAS 兼容性问题
 TASKS_BASE="lambada_openai,arc_easy,arc_challenge,hellaswag,winogrande,piqa,openbookqa,boolq"
-TASKS_REASONING="sciq,truthfulqa_mc2"
+TASKS_REASONING="sciq,truthfulqa_mc1"
 
 # === 模型注册表 ===
 declare -A MODEL_PATHS
@@ -218,7 +218,7 @@ eval_all_parallel() {
     echo "  ls $RESULTS_DIR/"
     echo ""
     echo "快速汇总:"
-    echo "  grep -h 'acc' $RESULTS_DIR/*_mc.log | head -50"
+    echo "  grep -h 'acc' $RESULTS_DIR/*.log | head -50"
 }
 
 # === 执行 ===
