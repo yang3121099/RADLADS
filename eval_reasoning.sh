@@ -21,19 +21,15 @@ set -e
 
 # === 配置 ===
 PRECISION="${PRECISION:-16}"
-BSZ="${BSZ:-8}"                  # loglikelihood 任务 batch size
-BSZ_GEN="${BSZ_GEN:-1}"         # 生成类任务 batch size
+BSZ="${BSZ:-8}"                  # batch size
 CTX_LEN="${CTX_LEN:-4096}"
 RESULTS_DIR="eval_results"
 NUM_GPUS=2                      # 可用 GPU 数量
 
 # === 任务集 ===
-# 基础 benchmark (loglikelihood, 可以大 batch)
+# 全部使用 loglikelihood 类任务，可以大 batch，无 CUBLAS 兼容性问题
 TASKS_BASE="lambada_openai,arc_easy,arc_challenge,hellaswag,winogrande,piqa,openbookqa,boolq"
-# 推理 benchmark (loglikelihood)
-TASKS_REASONING_MC="sciq,truthfulqa_mc2"
-# 推理 benchmark (generation)
-TASKS_REASONING_GEN="gsm8k"
+TASKS_REASONING="sciq,truthfulqa_mc2"
 
 # === 模型注册表 ===
 declare -A MODEL_PATHS
@@ -86,7 +82,7 @@ if [ -z "$MODEL_KEY" ]; then
     echo "Suite: base | reasoning | all (默认)"
     echo ""
     echo "  base      — $TASKS_BASE"
-    echo "  reasoning — $TASKS_REASONING_MC + $TASKS_REASONING_GEN"
+    echo "  reasoning — $TASKS_REASONING"
     echo ""
     echo "示例:"
     echo "  bash eval_reasoning.sh v7-model3-200M reasoning"
@@ -142,44 +138,25 @@ eval_one_model() {
 
     echo "[GPU $gpu_id] $model_name | $arch | $attn_type"
 
-    # --- loglikelihood 任务 ---
     local tasks=""
     case "$SUITE" in
         base)      tasks="$TASKS_BASE" ;;
-        reasoning) tasks="$TASKS_REASONING_MC" ;;
-        all)       tasks="${TASKS_BASE},${TASKS_REASONING_MC}" ;;
+        reasoning) tasks="$TASKS_REASONING" ;;
+        all)       tasks="${TASKS_BASE},${TASKS_REASONING}" ;;
     esac
 
-    if [ -n "$tasks" ]; then
-        echo "[GPU $gpu_id] MC tasks (bsz=$BSZ): $tasks"
-        CUDA_VISIBLE_DEVICES=$gpu_id python run_lm_eval.py \
-            -c configs/qwen7b.yaml \
-            -c "$arch_config" \
-            --model.attention_type "$attn_type" \
-            --model.ctx_len $CTX_LEN \
-            --precision $PRECISION \
-            --path "$model_path" \
-            --tasks "$tasks" \
-            --bsz $BSZ \
-            $lora_args \
-            2>&1 | tee "${RESULTS_DIR}/${model_name}_mc.log"
-    fi
-
-    # --- 生成类任务 ---
-    if [ "$SUITE" = "all" ] || [ "$SUITE" = "reasoning" ]; then
-        echo "[GPU $gpu_id] Gen tasks (bsz=$BSZ_GEN): $TASKS_REASONING_GEN"
-        CUDA_VISIBLE_DEVICES=$gpu_id python run_lm_eval.py \
-            -c configs/qwen7b.yaml \
-            -c "$arch_config" \
-            --model.attention_type "$attn_type" \
-            --model.ctx_len $CTX_LEN \
-            --precision $PRECISION \
-            --path "$model_path" \
-            --tasks "$TASKS_REASONING_GEN" \
-            --bsz $BSZ_GEN \
-            $lora_args \
-            2>&1 | tee "${RESULTS_DIR}/${model_name}_gen.log"
-    fi
+    echo "[GPU $gpu_id] Tasks (bsz=$BSZ): $tasks"
+    CUDA_VISIBLE_DEVICES=$gpu_id python run_lm_eval.py \
+        -c configs/qwen7b.yaml \
+        -c "$arch_config" \
+        --model.attention_type "$attn_type" \
+        --model.ctx_len $CTX_LEN \
+        --precision $PRECISION \
+        --path "$model_path" \
+        --tasks "$tasks" \
+        --bsz $BSZ \
+        $lora_args \
+        2>&1 | tee "${RESULTS_DIR}/${model_name}.log"
 
     echo "[GPU $gpu_id][DONE] $model_name"
 }
