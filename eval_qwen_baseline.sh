@@ -22,9 +22,6 @@ RESULTS_DIR="eval_results"
 GPU="${GPU:-0}"
 HF_CACHE="/workspace/.hf_home/hub"
 
-# === 任务 (与 eval_reasoning.sh 的 TASKS_BASE 保持一致) ===
-TASKS="lambada_openai,arc_easy,arc_challenge,hellaswag,winogrande,piqa,openbookqa,boolq"
-
 # === 待测模型列表 ===
 MODELS=(
     "Qwen/Qwen2-7B"
@@ -39,7 +36,6 @@ mkdir -p "$RESULTS_DIR"
 echo "=========================================="
 echo " Qwen Baseline Sequential Evaluation"
 echo " Models: ${#MODELS[@]}"
-echo " Tasks:  $TASKS"
 echo " GPU:    $GPU"
 echo " Cache:  $HF_CACHE (auto-cleanup)"
 echo "=========================================="
@@ -60,13 +56,7 @@ for i in "${!MODELS[@]}"; do
     echo " [$IDX/${#MODELS[@]}] $MODEL"
     echo "=========================================="
 
-    CUDA_VISIBLE_DEVICES=$GPU lm_eval \
-        --model hf \
-        --model_args "pretrained=$MODEL,trust_remote_code=True" \
-        --tasks $TASKS \
-        --batch_size $BSZ \
-        --device cuda \
-        --output_path "${RESULTS_DIR}/${MODEL_SHORT}" \
+    CUDA_VISIBLE_DEVICES=$GPU python eval_qwen_hf.py "$MODEL" "$BSZ" \
         2>&1 | tee "${RESULTS_DIR}/${MODEL_SHORT}.log"
 
     echo ""
