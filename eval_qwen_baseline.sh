@@ -62,7 +62,7 @@ for i in "${!MODELS[@]}"; do
 
     CUDA_VISIBLE_DEVICES=$GPU lm_eval \
         --model hf \
-        --model_args "pretrained=$MODEL,dtype=float16,trust_remote_code=True" \
+        --model_args "pretrained=$MODEL,torch_dtype=float16,trust_remote_code=True" \
         --tasks $TASKS \
         --batch_size $BSZ \
         --device cuda \
