@@ -22,8 +22,11 @@ if importlib.util.find_spec('deepspeed'):
 
 from src.logger import print0 as print
 
-ATTENTION_TYPE = os.environ["RWKV_ATTENTION_TYPE"]
-if ATTENTION_TYPE == 'rwkv6':
+ATTENTION_TYPE = os.environ.get("RWKV_ATTENTION_TYPE", "")
+if ATTENTION_TYPE in ("", "eager", "sdpa", "flash_attention_2"):
+    # Standard Qwen2 attention path (TMix_qwen2) does not need custom CUDA kernels at import time.
+    pass
+elif ATTENTION_TYPE == 'rwkv6':
     from cuda import rwkv6_cuda
 elif 'gla' in ATTENTION_TYPE:
     from fla.ops.gla.chunk import chunk_gla
