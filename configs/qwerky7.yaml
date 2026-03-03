@@ -1,6 +1,6 @@
 model:
   tmix: qwerky7
-  attention_type: rwkv7_wind_backstepping_longhead # rwkv7 # rwkv7_wind_backstepping_longhead # rwkv7_wind_replaystepping_longhead # 
+  attention_type: rwkv7_wind_backstepping_bighead # default set to existing kernel sources in rwkv_cuda_wind/
   reinit_att: 0
   gate_rank_type: 2
   use_pos_emb: 1
