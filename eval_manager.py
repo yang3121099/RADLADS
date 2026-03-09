@@ -85,7 +85,7 @@ def extract_step_info(path):
     return 0, basename.replace(".pth", "")
 
 
-def run_standard_eval(path, bsz=1):
+def run_standard_eval(path, bsz=1, env=None):
     """Run standard lm_eval benchmarks and return results dict."""
     import subprocess
     cmd = [
@@ -98,7 +98,9 @@ def run_standard_eval(path, bsz=1):
     print(f"\n[EVAL] Running standard benchmarks: {path}")
     print(f"[EVAL] Command: {' '.join(cmd)}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ})
+    if env is None:
+        env = {**os.environ}
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     print(result.stdout)
     if result.stderr:
         # Filter out common warnings, print important errors
@@ -136,7 +138,7 @@ def run_standard_eval(path, bsz=1):
     return results
 
 
-def run_supergpqa_eval(path, bsz=1):
+def run_supergpqa_eval(path, bsz=1, env=None):
     """Run SuperGPQA eval and return results dict."""
     import subprocess
     cmd = [
@@ -148,7 +150,9 @@ def run_supergpqa_eval(path, bsz=1):
     print(f"\n[EVAL] Running SuperGPQA: {path}")
     print(f"[EVAL] Command: {' '.join(cmd)}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ})
+    if env is None:
+        env = {**os.environ}
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     print(result.stdout)
     if result.stderr:
         for line in result.stderr.split('\n'):
@@ -176,8 +180,50 @@ def run_supergpqa_eval(path, bsz=1):
     return results
 
 
-def eval_checkpoint(path, bsz=1, force=False):
-    """Evaluate a single checkpoint, saving results incrementally."""
+def _init_log_entry(path):
+    """Create a new log entry for a checkpoint."""
+    step, label = extract_step_info(path)
+    return {
+        "path": path,
+        "basename": os.path.basename(path),
+        "step": step,
+        "label": label,
+        "standard_done": False,
+        "supergpqa_done": False,
+        "standard_results": {},
+        "supergpqa_results": {},
+    }
+
+
+def _save_result(ckpt_key, path, eval_type, results):
+    """Thread-safe save: reload log, merge result, write back."""
+    import fcntl
+    lock_path = EVAL_LOG + ".lock"
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        log = load_log()
+        if ckpt_key not in log:
+            log[ckpt_key] = _init_log_entry(path)
+        entry = log[ckpt_key]
+        if eval_type == "standard":
+            entry["standard_results"] = results
+            entry["standard_done"] = True
+            entry["standard_eval_time"] = datetime.now().isoformat()
+        elif eval_type == "supergpqa":
+            entry["supergpqa_results"] = results
+            entry["supergpqa_done"] = True
+            entry["supergpqa_eval_time"] = datetime.now().isoformat()
+        save_log(log)
+        fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+
+def eval_checkpoint(path, bsz=1, force=False, gpu=None, only=None):
+    """Evaluate a single checkpoint, saving results incrementally.
+
+    Args:
+        only: "standard" or "supergpqa" to run only one type, None for both
+        gpu: CUDA device id to use (sets CUDA_VISIBLE_DEVICES)
+    """
     log = load_log()
     ckpt_key = get_ckpt_key(path)
 
@@ -185,44 +231,32 @@ def eval_checkpoint(path, bsz=1, force=False):
         print(f"[SKIP] Already evaluated: {path}")
         return
 
-    step, label = extract_step_info(path)
-
     if ckpt_key not in log:
-        log[ckpt_key] = {
-            "path": path,
-            "basename": os.path.basename(path),
-            "step": step,
-            "label": label,
-            "standard_done": False,
-            "supergpqa_done": False,
-            "standard_results": {},
-            "supergpqa_results": {},
-        }
+        log[ckpt_key] = _init_log_entry(path)
+        save_log(log)
 
     entry = log[ckpt_key]
 
+    env = {**os.environ}
+    if gpu is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+
     # Standard benchmarks
-    if force or not entry.get("standard_done", False):
+    if only in (None, "standard") and (force or not entry.get("standard_done", False)):
         try:
-            std_results = run_standard_eval(path, bsz)
+            std_results = run_standard_eval(path, bsz, env=env)
             if std_results:
-                entry["standard_results"] = std_results
-                entry["standard_done"] = True
-                entry["standard_eval_time"] = datetime.now().isoformat()
-                save_log(log)
+                _save_result(ckpt_key, path, "standard", std_results)
                 print(f"[OK] Standard benchmarks saved for {os.path.basename(path)}")
         except Exception as e:
             print(f"[ERROR] Standard eval failed: {e}")
 
     # SuperGPQA
-    if force or not entry.get("supergpqa_done", False):
+    if only in (None, "supergpqa") and (force or not entry.get("supergpqa_done", False)):
         try:
-            sgpqa_results = run_supergpqa_eval(path, bsz)
+            sgpqa_results = run_supergpqa_eval(path, bsz, env=env)
             if sgpqa_results:
-                entry["supergpqa_results"] = sgpqa_results
-                entry["supergpqa_done"] = True
-                entry["supergpqa_eval_time"] = datetime.now().isoformat()
-                save_log(log)
+                _save_result(ckpt_key, path, "supergpqa", sgpqa_results)
                 print(f"[OK] SuperGPQA saved for {os.path.basename(path)}")
         except Exception as e:
             print(f"[ERROR] SuperGPQA eval failed: {e}")
@@ -249,6 +283,84 @@ def eval_all(directory, bsz=1, force=False):
         print(f"[EVAL] ({i+1}/{total}) {os.path.basename(ckpt)}")
         print(f"{'='*60}")
         eval_checkpoint(ckpt, bsz, force)
+
+    # Auto-generate summary
+    generate_summary()
+
+
+def eval_all_parallel(directory, bsz=4, force=False, gpu0=0, gpu1=1):
+    """Evaluate all checkpoints using 2 GPUs in parallel.
+
+    GPU0 runs standard benchmarks, GPU1 runs SuperGPQA simultaneously.
+    For each checkpoint, both evals run in parallel on separate GPUs.
+    """
+    import subprocess
+
+    ckpts = sorted(glob.glob(os.path.join(directory, "rwkv-*.pth")))
+    if not ckpts:
+        print(f"[WARN] No checkpoints found in {directory}")
+        return
+
+    log = load_log()
+    done = sum(1 for c in ckpts if is_eval_complete(log, get_ckpt_key(c)))
+    total = len(ckpts)
+    print(f"[INFO] Found {total} checkpoints, {done} already evaluated, {total - done} remaining")
+    print(f"[INFO] Parallel mode: GPU{gpu0} -> standard, GPU{gpu1} -> SuperGPQA, bsz={bsz}")
+
+    for i, ckpt in enumerate(ckpts):
+        key = get_ckpt_key(ckpt)
+        if not force and is_eval_complete(log, key):
+            print(f"[SKIP] ({i+1}/{total}) {os.path.basename(ckpt)}")
+            continue
+
+        log = load_log()  # reload to check partial completions
+        if key not in log:
+            log[key] = _init_log_entry(ckpt)
+            save_log(log)
+        entry = log[key]
+
+        print(f"\n{'='*60}")
+        print(f"[EVAL] ({i+1}/{total}) {os.path.basename(ckpt)} [parallel]")
+        print(f"{'='*60}")
+
+        need_standard = force or not entry.get("standard_done", False)
+        need_supergpqa = force or not entry.get("supergpqa_done", False)
+
+        procs = []
+
+        if need_standard:
+            cmd_std = [
+                sys.executable, "eval_manager.py", "eval",
+                "--path", ckpt, "--bsz", str(bsz), "--gpu", str(gpu0),
+                "--only", "standard",
+            ]
+            if force:
+                cmd_std.append("--force")
+            print(f"  [GPU{gpu0}] Standard benchmarks...")
+            env0 = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu0)}
+            p0 = subprocess.Popen(cmd_std, env=env0)
+            procs.append(("standard", p0))
+
+        if need_supergpqa:
+            cmd_sgpqa = [
+                sys.executable, "eval_manager.py", "eval",
+                "--path", ckpt, "--bsz", str(bsz), "--gpu", str(gpu1),
+                "--only", "supergpqa",
+            ]
+            if force:
+                cmd_sgpqa.append("--force")
+            print(f"  [GPU{gpu1}] SuperGPQA...")
+            env1 = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu1)}
+            p1 = subprocess.Popen(cmd_sgpqa, env=env1)
+            procs.append(("supergpqa", p1))
+
+        # Wait for both to finish
+        for name, proc in procs:
+            rc = proc.wait()
+            if rc != 0:
+                print(f"  [WARN] {name} exited with code {rc}")
+            else:
+                print(f"  [OK] {name} done")
 
     # Auto-generate summary
     generate_summary()
@@ -342,21 +454,32 @@ def main():
     p_eval.add_argument("--path", required=True)
     p_eval.add_argument("--bsz", type=int, default=1)
     p_eval.add_argument("--force", action="store_true")
+    p_eval.add_argument("--gpu", type=int, default=None)
+    p_eval.add_argument("--only", choices=["standard", "supergpqa"], default=None)
 
     p_all = sub.add_parser("eval_all", help="Evaluate all checkpoints in directory")
     p_all.add_argument("--dir", required=True)
     p_all.add_argument("--bsz", type=int, default=1)
     p_all.add_argument("--force", action="store_true")
 
+    p_par = sub.add_parser("eval_all_parallel", help="Evaluate all checkpoints using 2 GPUs in parallel")
+    p_par.add_argument("--dir", required=True)
+    p_par.add_argument("--bsz", type=int, default=4)
+    p_par.add_argument("--force", action="store_true")
+    p_par.add_argument("--gpu0", type=int, default=0)
+    p_par.add_argument("--gpu1", type=int, default=1)
+
     p_sum = sub.add_parser("summary", help="Generate markdown summary")
 
     args = parser.parse_args()
 
     if args.command == "eval":
-        eval_checkpoint(args.path, args.bsz, args.force)
+        eval_checkpoint(args.path, args.bsz, args.force, gpu=args.gpu, only=args.only)
         generate_summary()
     elif args.command == "eval_all":
         eval_all(args.dir, args.bsz, args.force)
+    elif args.command == "eval_all_parallel":
+        eval_all_parallel(args.dir, args.bsz, args.force, args.gpu0, args.gpu1)
     elif args.command == "summary":
         generate_summary()
     else:

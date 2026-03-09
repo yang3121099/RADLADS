@@ -18,7 +18,7 @@ CKPT_DIR="out/L28-D3584-qwerky7_qwen2-4_BOA"
 CKPT_PATH="${CKPT_DIR}/rwkv-1.pth"
 PROJ_DIR="out/L28-D3584-qwerky7_qwen2-5_continue"
 
-EVAL_BSZ=1
+EVAL_BSZ=4
 
 # === Step 0: 下载 checkpoint ===
 download_ckpt() {
@@ -101,10 +101,16 @@ eval_model() {
     python eval_manager.py eval --path "${model_path}" --bsz ${EVAL_BSZ}
 }
 
-# === Step 4: 测评所有 checkpoint (自动跳过已完成) ===
+# === Step 4: 测评所有 checkpoint (单卡串行) ===
 eval_all() {
     local dir="${2:-${PROJ_DIR}}"
     python eval_manager.py eval_all --dir "${dir}" --bsz ${EVAL_BSZ}
+}
+
+# === Step 4b: 双卡并行测评所有 checkpoint (推荐) ===
+eval_all_parallel() {
+    local dir="${2:-${PROJ_DIR}}"
+    python eval_manager.py eval_all_parallel --dir "${dir}" --bsz ${EVAL_BSZ} --gpu0 0 --gpu1 1
 }
 
 # === Step 5: 输出汇总表格 ===
@@ -114,14 +120,15 @@ summary() {
 
 # === 执行 ===
 case "${1:-help}" in
-    setup)          download_ckpt && prepare_data ;;
-    download)       download_ckpt ;;
-    prepare_data)   prepare_data ;;
-    train)          train ;;
-    train_chimera)  train_chimera ;;
-    eval)           eval_model "${2}" ;;
-    eval_all)       eval_all "$@" ;;
-    summary)        summary ;;
+    setup)              download_ckpt && prepare_data ;;
+    download)           download_ckpt ;;
+    prepare_data)       prepare_data ;;
+    train)              train ;;
+    train_chimera)      train_chimera ;;
+    eval)               eval_model "${2}" ;;
+    eval_all)           eval_all "$@" ;;
+    eval_all_parallel)  eval_all_parallel "$@" ;;
+    summary)            summary ;;
     *)
         echo "用法: bash run_continue_train.sh <command>"
         echo ""
@@ -132,7 +139,8 @@ case "${1:-help}" in
         echo "  train              - 用 OpenR1-Math 数据训练"
         echo "  train_chimera      - 用 CHIMERA 数据训练"
         echo "  eval <path>        - 测评单个 checkpoint (已完成的自动跳过)"
-        echo "  eval_all [dir]     - 测评目录下所有 checkpoint (已完成的自动跳过)"
+        echo "  eval_all [dir]     - 单卡串行测评所有 checkpoint"
+        echo "  eval_all_parallel  - 双卡并行测评所有 checkpoint (推荐)"
         echo "  summary            - 输出汇总 markdown 表格"
         ;;
 esac
