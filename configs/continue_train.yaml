@@ -1,5 +1,5 @@
 model:
-  ctx_len: 512
+  ctx_len: 4096
 
 train:
   proj_suffix: 5_continue
@@ -7,9 +7,13 @@ train:
   load_partial: 0
 
   data_type: "binidx"
-  data_file: "data/OpenR1-Math-220k"  # change to "data/CHIMERA" for CHIMERA dataset
+  data_file: "data/CHIMERA"
   my_exit_tokens: 200000000
-  magic_prime: 2929793
+
+  # magic_prime 需要匹配数据集和 ctx_len，以下是预计算值:
+  #   CHIMERA   ctx_len=4096 -> magic_prime = 53939
+  #   OpenR1    ctx_len=4096 -> 需要重新用 prepare_reasoning_data.py 计算
+  magic_prime: 53939
 
   optimizer: dsfusedadamw
   lr_decay_type: cos
@@ -23,11 +27,14 @@ train:
 
   devices: 2
   num_nodes: 1
-  micro_bsz: 2
-  accumulate_grad_batches: 8
+  micro_bsz: 1
+  accumulate_grad_batches: 16
   strategy: deepspeed_stage_1
   grad_cp: 1
   ds_bucket_mb: 200
 
   epoch_save: 1
-  save_every_n_steps: 625  # ~20M tokens per save (20M / (512 * 2 * 2 * 8) ≈ 625 steps with 2 devices, micro_bsz 2, accum 8)
+  # 2 devices * micro_bsz 1 * accum 16 = global_step_bsz 32
+  # tokens/step = 4096 * 32 = 131072
+  # 20M / 131072 ≈ 152 steps
+  save_every_n_steps: 150
