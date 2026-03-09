@@ -71,7 +71,6 @@ train() {
     RWKV_TORCH_COMPILE=0 RWKV_JIT_ON=0 python3 train.py \
         -c configs/qwen7b.yaml \
         -c configs/qwerky7.yaml \
-        -c configs/qwen7binstructteacher.yaml \
         -c configs/continue_train.yaml \
         --model.attention_type rwkv7_fla_chunk \
         --train.load_model "${CKPT_PATH}" \
@@ -87,7 +86,6 @@ train_chimera() {
     RWKV_TORCH_COMPILE=0 RWKV_JIT_ON=0 python3 train.py \
         -c configs/qwen7b.yaml \
         -c configs/qwerky7.yaml \
-        -c configs/qwen7binstructteacher.yaml \
         -c configs/continue_train.yaml \
         --model.attention_type rwkv7_fla_chunk \
         --train.load_model "${CKPT_PATH}" \
