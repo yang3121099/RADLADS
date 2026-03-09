@@ -151,6 +151,16 @@ class train_callback(pl.Callback):
             #     if kt_s > 0:
             #         lll["kt/s"] = kt_s
             #     trainer.my_wandb.log(lll, step=int(real_global_step))
+        # Step-based checkpoint saving (save_every_n_steps)
+        save_every = getattr(config.train, 'save_every_n_steps', 0)
+        if save_every > 0 and int(real_global_step) > 0 and int(real_global_step) % save_every == 0:
+            try:
+                real_tokens = pl_module.get_real_tokens()
+                token_label = f"{real_tokens / 1e6:.0f}M"
+                pl_module.save_weights(f"{config.runtime.proj_path}/rwkv-step{int(real_global_step)}-{token_label}.pth")
+            except Exception as e:
+                print('Error saving step checkpoint\n\n', e, '\n\n')
+
         if config.train.magic_prime > 0:
             expand_factor = 1
             if int(real_global_step) == int(config.train.magic_prime * expand_factor // self.config.runtime.global_step_bsz) - 1:

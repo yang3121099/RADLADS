@@ -1,0 +1,33 @@
+model:
+  ctx_len: 512
+
+train:
+  proj_suffix: 5_continue
+  train_stage: 3
+  load_partial: 0
+
+  data_type: "binidx"
+  data_file: "data/OpenR1-Math-220k"  # change to "data/CHIMERA" for CHIMERA dataset
+  my_exit_tokens: 200000000
+  magic_prime: 2929793
+
+  optimizer: dsfusedadamw
+  lr_decay_type: cos
+  lr_init: 5e-6
+  lr_final: 1e-6
+  warmup_steps: 50
+  beta1: 0.9
+  beta2: 0.95
+  adam_eps: 1e-8
+  weight_decay: 0
+
+  devices: 2
+  num_nodes: 1
+  micro_bsz: 2
+  accumulate_grad_batches: 8
+  strategy: deepspeed_stage_1
+  grad_cp: 1
+  ds_bucket_mb: 200
+
+  epoch_save: 1
+  save_every_n_steps: 625  # ~20M tokens per save (20M / (512 * 2 * 2 * 8) ≈ 625 steps with 2 devices, micro_bsz 2, accum 8)

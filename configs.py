@@ -115,6 +115,7 @@ class Train_Config:
 
     epoch_begin:int = 0
     epoch_save:int = 5
+    save_every_n_steps:int = 0
     micro_bsz:int = 12
 
     lr_decay_type:str = 'cos'

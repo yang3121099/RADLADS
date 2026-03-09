@@ -119,11 +119,33 @@ def format_generic_text(example):
     return example.get("text", None)
 
 
+def format_chimera(example):
+    """TianHongZXY/CHIMERA: expert-level reasoning problems with long CoT"""
+    problem = example.get("problem", example.get("question", ""))
+    # Try multiple possible field names for the reasoning/solution
+    thinking = example.get("thinking", example.get("reasoning", example.get("thought", "")))
+    solution = example.get("solution", example.get("answer", example.get("reference_solution", "")))
+    subject = example.get("subject", example.get("topic", ""))
+
+    if not problem:
+        return None
+    text = ""
+    if subject:
+        text += f"Subject: {subject}\n\n"
+    text += f"Problem:\n{problem}"
+    if thinking:
+        text += f"\n\nThinking:\n{thinking}"
+    if solution:
+        text += f"\n\nSolution:\n{solution}"
+    return text
+
+
 FORMATTERS = {
     "open-r1/OpenR1-Math-220k": format_openr1_math,
     "open-thoughts/OpenThoughts-114k": format_openthoughts,
     "AI-MO/NuminaMath-CoT": format_numina_cot,
     "bespokelabs/Bespoke-Stratos-17k": format_stratos,
+    "TianHongZXY/CHIMERA": format_chimera,
 }
 
 DATASET_CONFIGS = {
