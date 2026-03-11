@@ -19,6 +19,7 @@ CKPT_PATH="${CKPT_DIR}/rwkv-1.pth"
 PROJ_DIR="out/L28-D3584-qwerky7_qwen2-5_continue"
 
 EVAL_BSZ=4
+EVAL_WORKERS_PER_GPU=2  # 每张卡同时跑几组 eval
 
 # === Step 0: 下载 checkpoint ===
 download_ckpt() {
@@ -112,7 +113,7 @@ eval_all() {
 # === Step 4b: 双卡并行测评所有 checkpoint (推荐) ===
 eval_all_parallel() {
     local dir="${2:-${PROJ_DIR}}"
-    python eval_manager.py eval_all_parallel --dir "${dir}" --bsz ${EVAL_BSZ} --gpu0 0 --gpu1 1
+    python eval_manager.py eval_all_parallel --dir "${dir}" --bsz ${EVAL_BSZ} --gpu0 0 --gpu1 1 --workers-per-gpu ${EVAL_WORKERS_PER_GPU}
 }
 
 # === Step 5: 输出汇总表格 ===

@@ -288,13 +288,20 @@ def eval_all(directory, bsz=1, force=False):
     generate_summary()
 
 
-def eval_all_parallel(directory, bsz=4, force=False, gpu0=0, gpu1=1):
-    """Evaluate all checkpoints using 2 GPUs in parallel.
+def eval_all_parallel(directory, bsz=4, force=False, gpu0=0, gpu1=1, workers_per_gpu=2):
+    """Evaluate all checkpoints using 2 GPUs in parallel with multiple workers per GPU.
 
-    GPU0 runs standard benchmarks, GPU1 runs SuperGPQA simultaneously.
-    For each checkpoint, both evals run in parallel on separate GPUs.
+    Creates a task pool: each task is (checkpoint, eval_type).
+    Tasks are distributed round-robin across GPUs, with up to `workers_per_gpu`
+    concurrent processes per GPU.
+
+    Example with workers_per_gpu=2:
+      GPU0: [standard-ckpt1, standard-ckpt2] running simultaneously
+      GPU1: [supergpqa-ckpt1, supergpqa-ckpt2] running simultaneously
     """
     import subprocess
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    import threading
 
     ckpts = sorted(glob.glob(os.path.join(directory, "rwkv-*.pth")))
     if not ckpts:
@@ -302,65 +309,85 @@ def eval_all_parallel(directory, bsz=4, force=False, gpu0=0, gpu1=1):
         return
 
     log = load_log()
-    done = sum(1 for c in ckpts if is_eval_complete(log, get_ckpt_key(c)))
-    total = len(ckpts)
-    print(f"[INFO] Found {total} checkpoints, {done} already evaluated, {total - done} remaining")
-    print(f"[INFO] Parallel mode: GPU{gpu0} -> standard, GPU{gpu1} -> SuperGPQA, bsz={bsz}")
 
-    for i, ckpt in enumerate(ckpts):
+    # Build task list: (checkpoint_path, eval_type, gpu_id)
+    tasks = []
+    for ckpt in ckpts:
         key = get_ckpt_key(ckpt)
-        if not force and is_eval_complete(log, key):
-            print(f"[SKIP] ({i+1}/{total}) {os.path.basename(ckpt)}")
-            continue
-
-        log = load_log()  # reload to check partial completions
         if key not in log:
             log[key] = _init_log_entry(ckpt)
-            save_log(log)
-        entry = log[key]
-
-        print(f"\n{'='*60}")
-        print(f"[EVAL] ({i+1}/{total}) {os.path.basename(ckpt)} [parallel]")
-        print(f"{'='*60}")
+        entry = log.get(key, {})
 
         need_standard = force or not entry.get("standard_done", False)
         need_supergpqa = force or not entry.get("supergpqa_done", False)
 
-        procs = []
-
         if need_standard:
-            cmd_std = [
-                sys.executable, "eval_manager.py", "eval",
-                "--path", ckpt, "--bsz", str(bsz), "--gpu", str(gpu0),
-                "--only", "standard",
-            ]
-            if force:
-                cmd_std.append("--force")
-            print(f"  [GPU{gpu0}] Standard benchmarks...")
-            env0 = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu0)}
-            p0 = subprocess.Popen(cmd_std, env=env0)
-            procs.append(("standard", p0))
-
+            tasks.append((ckpt, "standard", gpu0))
         if need_supergpqa:
-            cmd_sgpqa = [
+            tasks.append((ckpt, "supergpqa", gpu1))
+
+    save_log(log)
+
+    if not tasks:
+        print(f"[INFO] All {len(ckpts)} checkpoints already evaluated, nothing to do")
+        generate_summary()
+        return
+
+    total_tasks = len(tasks)
+    total_ckpts = len(set(t[0] for t in tasks))
+    total_workers = workers_per_gpu * 2
+    print(f"[INFO] {total_tasks} tasks for {total_ckpts} checkpoints")
+    print(f"[INFO] GPU{gpu0} -> standard, GPU{gpu1} -> SuperGPQA")
+    print(f"[INFO] {workers_per_gpu} workers/GPU, {total_workers} total concurrent processes, bsz={bsz}")
+
+    # Use semaphores to limit concurrency per GPU
+    gpu_semaphores = {gpu0: threading.Semaphore(workers_per_gpu), gpu1: threading.Semaphore(workers_per_gpu)}
+
+    def run_task(ckpt, eval_type, gpu_id):
+        """Run a single eval task as a subprocess."""
+        basename = os.path.basename(ckpt)
+        sem = gpu_semaphores[gpu_id]
+        sem.acquire()
+        try:
+            cmd = [
                 sys.executable, "eval_manager.py", "eval",
-                "--path", ckpt, "--bsz", str(bsz), "--gpu", str(gpu1),
-                "--only", "supergpqa",
+                "--path", ckpt, "--bsz", str(bsz), "--gpu", str(gpu_id),
+                "--only", eval_type,
             ]
             if force:
-                cmd_sgpqa.append("--force")
-            print(f"  [GPU{gpu1}] SuperGPQA...")
-            env1 = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu1)}
-            p1 = subprocess.Popen(cmd_sgpqa, env=env1)
-            procs.append(("supergpqa", p1))
+                cmd.append("--force")
+            env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_id)}
+            print(f"  [GPU{gpu_id}] START {eval_type:10s} {basename}")
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            status = "OK" if proc.returncode == 0 else f"FAIL(rc={proc.returncode})"
+            print(f"  [GPU{gpu_id}]  DONE {eval_type:10s} {basename} [{status}]")
+            if proc.returncode != 0 and proc.stderr:
+                for line in proc.stderr.strip().split('\n')[-5:]:
+                    print(f"         {line}")
+            return (basename, eval_type, proc.returncode)
+        finally:
+            sem.release()
 
-        # Wait for both to finish
-        for name, proc in procs:
-            rc = proc.wait()
+    # Submit all tasks to a thread pool (threads manage subprocesses + semaphores)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=total_workers) as pool:
+        futures = {pool.submit(run_task, ckpt, etype, gpu): (ckpt, etype)
+                   for ckpt, etype, gpu in tasks}
+
+        done_count = 0
+        failed = []
+        for future in as_completed(futures):
+            done_count += 1
+            basename, eval_type, rc = future.result()
             if rc != 0:
-                print(f"  [WARN] {name} exited with code {rc}")
-            else:
-                print(f"  [OK] {name} done")
+                failed.append(f"{basename}/{eval_type}")
+            if done_count % 4 == 0 or done_count == total_tasks:
+                print(f"[PROGRESS] {done_count}/{total_tasks} tasks complete")
+
+    if failed:
+        print(f"\n[WARN] {len(failed)} tasks failed: {', '.join(failed)}")
+    else:
+        print(f"\n[OK] All {total_tasks} tasks completed successfully")
 
     # Auto-generate summary
     generate_summary()
@@ -468,6 +495,8 @@ def main():
     p_par.add_argument("--force", action="store_true")
     p_par.add_argument("--gpu0", type=int, default=0)
     p_par.add_argument("--gpu1", type=int, default=1)
+    p_par.add_argument("--workers-per-gpu", type=int, default=2,
+                       help="Number of concurrent eval processes per GPU (default: 2)")
 
     p_sum = sub.add_parser("summary", help="Generate markdown summary")
 
@@ -479,7 +508,7 @@ def main():
     elif args.command == "eval_all":
         eval_all(args.dir, args.bsz, args.force)
     elif args.command == "eval_all_parallel":
-        eval_all_parallel(args.dir, args.bsz, args.force, args.gpu0, args.gpu1)
+        eval_all_parallel(args.dir, args.bsz, args.force, args.gpu0, args.gpu1, args.workers_per_gpu)
     elif args.command == "summary":
         generate_summary()
     else:
