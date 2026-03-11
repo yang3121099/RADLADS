@@ -73,7 +73,8 @@ train() {
         -c configs/continue_train.yaml \
         --model.attention_type rwkv7_fla_chunk \
         --train.load_model "${CKPT_PATH}" \
-        --train.data_file data/OpenR1-Math-220k
+        --train.data_file data/OpenR1-Math-220k \
+        --train.magic_prime 98939
 }
 
 # === Step 2b: 训练 (CHIMERA) ===
@@ -88,7 +89,8 @@ train_chimera() {
         -c configs/continue_train.yaml \
         --model.attention_type rwkv7_fla_chunk \
         --train.load_model "${CKPT_PATH}" \
-        --train.data_file data/CHIMERA
+        --train.data_file data/CHIMERA \
+        --train.magic_prime 53939
 }
 
 # === Step 3: 测评 (使用 eval_manager.py) ===

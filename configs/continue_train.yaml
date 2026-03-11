@@ -11,8 +11,8 @@ train:
   my_exit_tokens: 200000000
 
   # magic_prime 需要匹配数据集和 ctx_len，以下是预计算值:
-  #   CHIMERA   ctx_len=4096 -> magic_prime = 53939
-  #   OpenR1    ctx_len=4096 -> 需要重新用 prepare_reasoning_data.py 计算
+  #   CHIMERA      ctx_len=4096 -> magic_prime = 53939
+  #   OpenR1-Math  ctx_len=4096 -> magic_prime = 98939  (405300137 tokens)
   magic_prime: 53939
 
   optimizer: dsfusedadamw
