@@ -12,8 +12,14 @@
     # 测评目录下所有 checkpoint (跳过已完成的)
     python eval_manager.py eval_all --dir out/L28-D3584-qwerky7_qwen2-5_continue
 
+    # 测评 HuggingFace baseline 模型
+    python eval_manager.py eval_baseline --model Qwen/Qwen2.5-7B
+
     # 生成汇总 markdown 表格
     python eval_manager.py summary
+
+    # 从指定 JSON 文件生成汇总
+    python eval_manager.py summary --log eval_result-bks.json
 
     # 强制重新测评
     python eval_manager.py eval --path out/.../rwkv-step150-20M.pth --force
@@ -393,6 +399,136 @@ def eval_all_parallel(directory, bsz=4, force=False, gpu0=0, gpu1=1, workers_per
     generate_summary()
 
 
+def run_baseline_standard_eval(model_name, bsz="auto", gpu=None):
+    """Run standard lm_eval benchmarks on a HuggingFace baseline model."""
+    import subprocess
+    env = {**os.environ}
+    if gpu is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+
+    cmd = [
+        sys.executable, "eval_qwen_hf.py", model_name, str(bsz),
+    ]
+    print(f"\n[EVAL] Running standard benchmarks on baseline: {model_name}")
+    print(f"[EVAL] Command: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    print(result.stdout)
+    if result.stderr:
+        for line in result.stderr.split('\n'):
+            if 'error' in line.lower() or 'traceback' in line.lower():
+                print(f"[STDERR] {line}")
+
+    # Parse results - same format as eval_qwen_hf.py output
+    results = {}
+    current_task = None
+    for line in result.stdout.split('\n'):
+        line = line.strip()
+        # Task header: "  lambada_openai:"
+        m = re.match(r"(\w+):$", line)
+        if m:
+            current_task = m.group(1)
+            continue
+        # Metric line: "    acc,none: 0.7011"
+        if current_task and line.startswith("acc"):
+            m = re.match(r"(acc(?:_norm)?),none:\s+([\d.]+)", line)
+            if m:
+                # Use acc_norm if available, otherwise acc
+                metric = m.group(1)
+                val = round(float(m.group(2)) * 100, 2)
+                # For tasks that use acc_norm (hellaswag, winogrande, arc_challenge), prefer it
+                if metric == "acc_norm" or current_task not in results:
+                    results[current_task] = val
+
+    if not results:
+        print("[WARN] Could not parse baseline standard eval results")
+
+    return results
+
+
+def run_baseline_supergpqa_eval(model_name, bsz="auto", gpu=None):
+    """Run SuperGPQA eval on a HuggingFace baseline model using lm_eval."""
+    import subprocess
+    env = {**os.environ}
+    if gpu is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+
+    # Use lm_eval directly for HF models with SuperGPQA task
+    cmd = [
+        sys.executable, "-m", "lm_eval",
+        "--model", "hf",
+        "--model_args", f"pretrained={model_name},dtype=float16,trust_remote_code=True",
+        "--tasks", "supergpqa",
+        "--batch_size", str(bsz),
+        "--num_fewshot", "0",
+    ]
+    print(f"\n[EVAL] Running SuperGPQA on baseline: {model_name}")
+    print(f"[EVAL] Command: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    print(result.stdout)
+
+    # Parse SuperGPQA results from lm_eval output
+    results = {}
+    for line in result.stdout.split('\n'):
+        line = line.strip()
+        # lm_eval table format: |supergpqa|      0|acc     |↑  |0.1120|±  |0.0042|
+        m = re.match(r"\|\s*supergpqa\s*\|.*\|\s*acc\s*\|.*\|\s*([\d.]+)\s*\|", line)
+        if m:
+            results["supergpqa_overall"] = round(float(m.group(1)) * 100, 2)
+
+    if not results:
+        print("[WARN] Could not parse baseline SuperGPQA results")
+
+    return results
+
+
+def eval_baseline(model_name, bsz="auto", force=False, gpu=None, only=None):
+    """Evaluate a HuggingFace baseline model and save results to the same log."""
+    log = load_log()
+    ckpt_key = f"baseline:{model_name}"
+
+    if not force and ckpt_key in log and is_eval_complete(log, ckpt_key):
+        print(f"[SKIP] Already evaluated baseline: {model_name}")
+        return
+
+    if ckpt_key not in log:
+        short_name = model_name.replace("/", "-")
+        log[ckpt_key] = {
+            "path": model_name,
+            "basename": short_name,
+            "step": -1,
+            "label": "baseline",
+            "standard_done": False,
+            "supergpqa_done": False,
+            "standard_results": {},
+            "supergpqa_results": {},
+        }
+        save_log(log)
+
+    entry = log[ckpt_key]
+
+    # Standard benchmarks
+    if only in (None, "standard") and (force or not entry.get("standard_done", False)):
+        try:
+            std_results = run_baseline_standard_eval(model_name, bsz, gpu)
+            if std_results:
+                _save_result(ckpt_key, model_name, "standard", std_results)
+                print(f"[OK] Standard benchmarks saved for baseline {model_name}")
+        except Exception as e:
+            print(f"[ERROR] Baseline standard eval failed: {e}")
+
+    # SuperGPQA
+    if only in (None, "supergpqa") and (force or not entry.get("supergpqa_done", False)):
+        try:
+            sgpqa_results = run_baseline_supergpqa_eval(model_name, bsz, gpu)
+            if sgpqa_results:
+                _save_result(ckpt_key, model_name, "supergpqa", sgpqa_results)
+                print(f"[OK] SuperGPQA saved for baseline {model_name}")
+        except Exception as e:
+            print(f"[ERROR] Baseline SuperGPQA eval failed: {e}")
+
+
 def generate_summary():
     """Generate markdown summary table from eval log."""
     log = load_log()
@@ -498,7 +634,15 @@ def main():
     p_par.add_argument("--workers-per-gpu", type=int, default=2,
                        help="Number of concurrent eval processes per GPU (default: 2)")
 
+    p_base = sub.add_parser("eval_baseline", help="Evaluate HuggingFace baseline model")
+    p_base.add_argument("--model", required=True, help="HF model name, e.g. Qwen/Qwen2.5-7B")
+    p_base.add_argument("--bsz", default="auto")
+    p_base.add_argument("--force", action="store_true")
+    p_base.add_argument("--gpu", type=int, default=None)
+    p_base.add_argument("--only", choices=["standard", "supergpqa"], default=None)
+
     p_sum = sub.add_parser("summary", help="Generate markdown summary")
+    p_sum.add_argument("--log", default=None, help="Path to eval log JSON (default: eval_results.json)")
 
     args = parser.parse_args()
 
@@ -509,7 +653,13 @@ def main():
         eval_all(args.dir, args.bsz, args.force)
     elif args.command == "eval_all_parallel":
         eval_all_parallel(args.dir, args.bsz, args.force, args.gpu0, args.gpu1, args.workers_per_gpu)
+    elif args.command == "eval_baseline":
+        eval_baseline(args.model, args.bsz, args.force, gpu=args.gpu, only=args.only)
+        generate_summary()
     elif args.command == "summary":
+        if args.log:
+            global EVAL_LOG
+            EVAL_LOG = args.log
         generate_summary()
     else:
         parser.print_help()
