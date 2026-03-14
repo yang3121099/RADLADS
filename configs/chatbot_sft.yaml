@@ -1,0 +1,36 @@
+model:
+  ctx_len: 4096
+
+train:
+  proj_suffix: 6_chatbot_sft
+  train_stage: 3
+  load_partial: 0
+
+  data_type: "binidx"
+  data_file: "data/SlimOrca"    # 会被 run 脚本覆盖
+  my_exit_tokens: 200000000     # 200M tokens
+  magic_prime: 1                # 会被 run 脚本覆盖
+
+  optimizer: dsfusedadamw
+  lr_decay_type: cos
+  lr_init: 5e-6
+  lr_final: 1e-6
+  warmup_steps: 50
+  beta1: 0.9
+  beta2: 0.95
+  adam_eps: 1e-8
+  weight_decay: 0
+
+  devices: 2
+  num_nodes: 1
+  micro_bsz: 1
+  accumulate_grad_batches: 16
+  strategy: deepspeed_stage_1
+  grad_cp: 1
+  ds_bucket_mb: 200
+
+  epoch_save: 1
+  # 2 devices * micro_bsz 1 * accum 16 = global_step_bsz 32
+  # tokens/step = 4096 * 32 = 131072
+  # 20M / 131072 ≈ 152 steps
+  save_every_n_steps: 150
