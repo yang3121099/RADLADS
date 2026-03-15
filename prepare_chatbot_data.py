@@ -186,6 +186,11 @@ DATASET_CONFIGS = {
     "HuggingFaceH4/ultrachat_200k": "default",
 }
 
+# Some datasets use non-standard split names
+DATASET_SPLITS = {
+    "HuggingFaceH4/ultrachat_200k": "train_sft",
+}
+
 # ============================================================================
 # Magic prime calculation
 # ============================================================================
@@ -249,12 +254,16 @@ def main():
     token_dtype = np.int32 if tokenizer.vocab_size > 65536 else np.uint16
     eos_id = tokenizer.eos_token_id
 
-    # load dataset
-    print("Loading dataset...")
+    # load dataset - use dataset-specific split if user didn't override
+    split = args.split
+    if split == "train" and dataset_name in DATASET_SPLITS:
+        split = DATASET_SPLITS[dataset_name]
+        print(f"Using dataset-specific split: {split}")
+    print(f"Loading dataset (split={split})...")
     if ds_config:
-        dataset = load_dataset(dataset_name, ds_config, split=args.split, streaming=True)
+        dataset = load_dataset(dataset_name, ds_config, split=split, streaming=True)
     else:
-        dataset = load_dataset(dataset_name, split=args.split, streaming=True)
+        dataset = load_dataset(dataset_name, split=split, streaming=True)
 
     # build binidx
     builder = MMapIndexedDatasetBuilder(f"{out_prefix}.bin", dtype=token_dtype)
