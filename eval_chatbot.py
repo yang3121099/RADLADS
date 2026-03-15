@@ -35,7 +35,7 @@ CHATBOT_TASKS = "arc_challenge,hellaswag,winogrande,truthfulqa_mc2,mmlu,gsm8k"
 COMMON_ARGS = [
     "-c", "configs/qwen7b.yaml",
     "-c", "configs/qwerky7.yaml",
-    "--model.attention_type", "rwkv7_fla_fused_recurrent",
+    "--model.attention_type", "rwkv7_fla_chunk",
     "--model.ctx_len", "4096",
     "--precision", "bf16",
 ]

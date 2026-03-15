@@ -61,7 +61,7 @@ os.environ["RWKV_CTXLEN"] = str(config.model.ctx_len)
 os.environ["RWKV_HEAD_SIZE_A"] = str(config.model.head_size)
 attention_type = str(config.model.attention_type)
 if attention_type == 'rwkv7':
-    attention_type = 'rwkv7_fla_fused_recurrent'
+    attention_type = 'rwkv7_fla_chunk'
 os.environ["RWKV_ATTENTION_TYPE"] = attention_type
 
 model_path = config.path
@@ -288,7 +288,7 @@ class EvalHarnessAdapter(TemplateLM):
                 batch_info.append((len(q), len(src), rq_index))
                 maxlen = max(maxlen, len(src))
 
-            maxlen = (maxlen + 7) // 8 * 8 # round pad size up to nearest 8 for better GPU usage
+            maxlen = (maxlen + 15) // 16 * 16 # round pad size up to nearest 16 for chunk-based attention ops
             for i in range(len(batched_inputs)):
                 batched_inputs[i] = F.pad(batched_inputs[i], (0, maxlen - batched_inputs[i].size(0)))
             batched_inputs = torch.stack(batched_inputs, dim=0)

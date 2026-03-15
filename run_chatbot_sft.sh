@@ -35,7 +35,7 @@ TOKENIZER="Qwen/Qwen2.5-7B-Instruct"
 CTX_LEN=4096
 MAX_TOKENS=200000000  # 200M
 
-EVAL_BSZ=4
+EVAL_BSZ=1
 EVAL_GPU=0  # 测评用的 GPU
 
 # === Step 0: 下载 checkpoint ===
