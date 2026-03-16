@@ -176,13 +176,12 @@ class EvalHarnessAdapter(TemplateLM):
                 results = model.forward(tokens[:self.max_length], state)
                 if isinstance(results, tuple):
                     logits = results[0]
-                    #next_model_state = results[1]
+                    state = results[1] if len(results) > 1 else state
                 elif isinstance(results, torch.Tensor):
                     logits = results
-                    #next_model_state = last_model_state
                 else:
                     logits = results.logits
-                    #next_model_state = last_model_state
+                    state = results.model_state if hasattr(results, 'model_state') else state
                 tokens = tokens[self.max_length:]
             token = logits[0, -1].argmax().item()
             if token in STOP_TOKEN:
