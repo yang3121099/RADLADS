@@ -3,32 +3,52 @@
 # Tasks: arc_c, arc_e, boolq, hella, lambada, obqa, piqa, wino
 #
 # Usage:
-#   bash run_eval_parallel.sh out/L28-D3584-qwerky7_qwen2-6_chatbot_openhermes
+#   bash run_eval_parallel.sh                    # eval ALL dirs under out/
+#   bash run_eval_parallel.sh out/some_dir       # eval one dir only
 
 set -e
 
-CKPT_DIR="${1:?Usage: bash run_eval_parallel.sh <checkpoint_dir>}"
-BSZ=${2:-1}
-
+BSZ=${BSZ:-1}
 COMMON="-c configs/qwen7b.yaml -c configs/qwerky7.yaml --model.attention_type rwkv7_fla_chunk --model.ctx_len 4096 --precision bf16 --bsz $BSZ"
 
-CKPTS=($(ls "$CKPT_DIR"/rwkv-*.pth 2>/dev/null | sort))
-if [ ${#CKPTS[@]} -eq 0 ]; then
-    echo "[ERROR] No checkpoints found in $CKPT_DIR"
+# Collect all checkpoint dirs
+if [ -n "$1" ]; then
+    CKPT_DIRS=("$1")
+else
+    CKPT_DIRS=(out/*)
+fi
+
+# Collect all checkpoints across all dirs
+ALL_CKPTS=()
+for dir in "${CKPT_DIRS[@]}"; do
+    if [ -d "$dir" ]; then
+        for ckpt in "$dir"/rwkv-*.pth; do
+            [ -f "$ckpt" ] && ALL_CKPTS+=("$ckpt")
+        done
+    fi
+done
+
+if [ ${#ALL_CKPTS[@]} -eq 0 ]; then
+    echo "[ERROR] No checkpoints found"
     exit 1
 fi
 
-echo "Found ${#CKPTS[@]} checkpoint(s) in $CKPT_DIR"
+echo "Found ${#ALL_CKPTS[@]} checkpoint(s) across ${#CKPT_DIRS[@]} dir(s):"
+for dir in "${CKPT_DIRS[@]}"; do
+    count=$(ls "$dir"/rwkv-*.pth 2>/dev/null | wc -l)
+    echo "  $dir: $count checkpoint(s)"
+done
 echo "Batch size: $BSZ"
 echo "=========================================="
 
-LOGDIR="eval_logs/$(basename $CKPT_DIR)"
-mkdir -p "$LOGDIR"
-
-for ckpt in "${CKPTS[@]}"; do
+for ckpt in "${ALL_CKPTS[@]}"; do
+    dirname=$(basename "$(dirname "$ckpt")")
     name=$(basename "$ckpt" .pth)
+    LOGDIR="eval_logs/$dirname"
+    mkdir -p "$LOGDIR"
+
     echo ""
-    echo "=== Evaluating: $name ==="
+    echo "=== [$dirname] Evaluating: $name ==="
     echo ""
 
     # GPU 0 - 3 processes (heavier tasks get their own process)
@@ -92,5 +112,5 @@ done
 
 echo ""
 echo "=========================================="
-echo "All checkpoints evaluated!"
-echo "Logs saved to: $LOGDIR/"
+echo "All ${#ALL_CKPTS[@]} checkpoints evaluated!"
+echo "Logs saved to: eval_logs/"
