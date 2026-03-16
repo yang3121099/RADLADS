@@ -184,7 +184,7 @@ class EvalHarnessAdapter(TemplateLM):
                     logits = results.logits
                     #next_model_state = last_model_state
                 tokens = tokens[self.max_length:]
-            token = logits.argmax().item()
+            token = logits[0, -1].argmax().item()
             if token in STOP_TOKEN:
                 break
             all_tokens += [token]
