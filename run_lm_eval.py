@@ -271,6 +271,9 @@ class EvalHarnessAdapter(TemplateLM):
         res = [None for _ in range(len(requests))]
 
         B = self.batch_size_per_gpu
+        _total_batches = (len(requests) + B - 1) // B
+        _is_tty = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+        _last_pct_printed = -1
         for nb in range(0, len(requests), B):
             ne = min(nb+B, len(requests))
 
@@ -328,9 +331,23 @@ class EvalHarnessAdapter(TemplateLM):
                 # place the answer into the slot that matches the original request (this is important or lm_eval_harness will return bad results!!!)
                 res[rq_index] = answer
 
-            FREQ = 10 * B
-            if nb % FREQ == 0:
-                print(f'{nb//FREQ}/{len(requests)//FREQ}', end = ' ', flush=True)
+            done = nb // B + 1
+            pct = done * 100 // _total_batches if _total_batches > 0 else 100
+            bar_len = 30
+            filled = bar_len * done // _total_batches if _total_batches > 0 else bar_len
+            bar = '█' * filled + '░' * (bar_len - filled)
+            if _is_tty:
+                print(f'\r  [{bar}] {pct:3d}% ({done}/{_total_batches} batches)', end='', flush=True)
+            else:
+                # File/pipe: print at every 5% milestone
+                pct_step = pct // 5 * 5
+                if pct_step > _last_pct_printed:
+                    _last_pct_printed = pct_step
+                    print(f'  [{bar}] {pct:3d}% ({done}/{_total_batches} batches)', flush=True)
+            if nb + B >= len(requests):
+                if _is_tty:
+                    print(flush=True)
+                print(f'  [{"█" * 30}] 100% ({_total_batches}/{_total_batches} batches) done', flush=True)
 
         return res
 

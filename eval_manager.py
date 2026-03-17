@@ -578,7 +578,7 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
             ]
             if force:
                 cmd.append("--force")
-            env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_id)}
+            env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_id), "PYTHONUNBUFFERED": "1"}
             print(f"  [GPU{gpu_id}] START {eval_type:10s} {label}")
             with open(logfile, "w") as lf:
                 proc = subprocess.run(cmd, env=env, stdout=lf, stderr=subprocess.STDOUT, text=True)
