@@ -549,18 +549,25 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
     total_ckpts = len(set(t[0] for t in tasks))
     total_workers = workers_per_gpu * 2
     eval_types = set(t[1] for t in tasks)
+    # Log directory for per-model output files
+    logdir = "eval_logs"
+    os.makedirs(logdir, exist_ok=True)
+
     print(f"\n[INFO] {total_tasks} tasks for {total_ckpts} checkpoints")
     print(f"[INFO] Eval types: {', '.join(sorted(eval_types))}")
     print(f"[INFO] {workers_per_gpu} workers/GPU, {total_workers} total concurrent processes, bsz={bsz}")
+    print(f"[INFO] Logs: {logdir}/<dir>_<checkpoint>_<eval_type>.log")
+    print(f"[INFO] Monitor: tail -f {logdir}/*.log")
 
     # Use semaphores to limit concurrency per GPU
     gpu_semaphores = {gpu0: threading.Semaphore(workers_per_gpu), gpu1: threading.Semaphore(workers_per_gpu)}
 
     def run_task(ckpt, eval_type, gpu_id):
         """Run a single eval task as a subprocess."""
-        basename = os.path.basename(ckpt)
+        basename = os.path.basename(ckpt).replace(".pth", "")
         dirbase = os.path.basename(os.path.dirname(ckpt))
         label = f"{dirbase}/{basename}"
+        logfile = os.path.join(logdir, f"{dirbase}_{basename}_{eval_type}.log")
         sem = gpu_semaphores[gpu_id]
         sem.acquire()
         try:
@@ -573,12 +580,16 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
                 cmd.append("--force")
             env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_id)}
             print(f"  [GPU{gpu_id}] START {eval_type:10s} {label}")
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            with open(logfile, "w") as lf:
+                proc = subprocess.run(cmd, env=env, stdout=lf, stderr=subprocess.STDOUT, text=True)
             status = "OK" if proc.returncode == 0 else f"FAIL(rc={proc.returncode})"
             print(f"  [GPU{gpu_id}]  DONE {eval_type:10s} {label} [{status}]")
-            if proc.returncode != 0 and proc.stderr:
-                for line in proc.stderr.strip().split('\n')[-5:]:
-                    print(f"         {line}")
+            if proc.returncode != 0:
+                # Print last few lines from log on failure
+                with open(logfile, "r") as lf:
+                    lines = lf.readlines()
+                    for line in lines[-5:]:
+                        print(f"         {line.rstrip()}")
             return (label, eval_type, proc.returncode)
         finally:
             sem.release()
