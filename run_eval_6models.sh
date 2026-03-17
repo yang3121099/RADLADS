@@ -250,7 +250,8 @@ launch_job() {
     done
 
     # Launch eval subprocess
-    # --gpu 0 because CUDA_VISIBLE_DEVICES remaps to device 0
+    # Do NOT pass --gpu: eval_chatbot.py would override CUDA_VISIBLE_DEVICES.
+    # Let the shell-level CUDA_VISIBLE_DEVICES handle GPU assignment.
     local force_flag=""
     if [ $FORCE -eq 1 ]; then
         force_flag="--force"
@@ -259,7 +260,6 @@ launch_job() {
     CUDA_VISIBLE_DEVICES=$best_gpu python eval_chatbot.py eval \
         --path "$model" \
         --bsz $BSZ \
-        --gpu 0 \
         --group "$EVAL_GROUP" \
         $force_flag \
         > "$logfile" 2>&1 &
