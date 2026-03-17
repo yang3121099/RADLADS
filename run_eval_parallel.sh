@@ -1,6 +1,7 @@
 #!/bin/bash
-# Parallel eval: 2 GPUs × 3 processes each = 6 processes
-# Tasks: arc_c, arc_e, boolq, hella, lambada, obqa, piqa, wino
+# Model-parallel eval: 2 GPUs × 3 models each = up to 6 models at once
+# Each model runs ALL tasks in one process sequentially.
+# Tasks: arc_c, arc_e, boolq, hellaswag, lambada, obqa, piqa, winogrande
 #
 # Usage:
 #   bash run_eval_parallel.sh                    # eval ALL dirs under out/
@@ -8,8 +9,13 @@
 
 set -e
 
+NUM_GPUS=2
+PROCS_PER_GPU=3
+SLOTS=$((NUM_GPUS * PROCS_PER_GPU))  # 6
+
 BSZ=${BSZ:-1}
 COMMON="-c configs/qwen7b.yaml -c configs/qwerky7.yaml --model.attention_type rwkv7_fla_chunk --model.ctx_len 4096 --precision bf16 --bsz $BSZ"
+ALL_TASKS="hellaswag,lambada_openai,boolq,arc_challenge,arc_easy,openbookqa,piqa,winogrande"
 
 # Collect all checkpoint dirs
 if [ -n "$1" ]; then
@@ -38,79 +44,72 @@ for dir in "${CKPT_DIRS[@]}"; do
     count=$(ls "$dir"/rwkv-*.pth 2>/dev/null | wc -l)
     echo "  $dir: $count checkpoint(s)"
 done
+echo "Strategy: $NUM_GPUS GPUs × $PROCS_PER_GPU models/GPU = $SLOTS concurrent models"
+echo "Each model runs all tasks: $ALL_TASKS"
 echo "Batch size: $BSZ"
 echo "=========================================="
 
-for ckpt in "${ALL_CKPTS[@]}"; do
-    dirname=$(basename "$(dirname "$ckpt")")
-    name=$(basename "$ckpt" .pth)
-    LOGDIR="eval_logs/$dirname"
-    mkdir -p "$LOGDIR"
+# --- Launch models in batches of $SLOTS ---
+total=${#ALL_CKPTS[@]}
+idx=0
+
+while [ $idx -lt $total ]; do
+    PIDS=()
+    LABELS=()
+    batch_end=$((idx + SLOTS))
+    [ $batch_end -gt $total ] && batch_end=$total
 
     echo ""
-    echo "=== [$dirname] Evaluating: $name ==="
-    echo ""
+    echo ">>> Batch: checkpoints $((idx+1))-${batch_end} of $total"
 
-    # GPU 0 - 3 processes (heavier tasks get their own process)
-    CUDA_VISIBLE_DEVICES=0 python run_lm_eval.py $COMMON --path "$ckpt" \
-        --tasks hellaswag \
-        > "$LOGDIR/${name}_gpu0_p1.log" 2>&1 &
-    p1=$!
+    slot=0
+    for (( i=idx; i<batch_end; i++ )); do
+        ckpt="${ALL_CKPTS[$i]}"
+        dirbase=$(basename "$(dirname "$ckpt")")
+        name=$(basename "$ckpt" .pth)
+        gpu=$((slot / PROCS_PER_GPU))
+        LOGDIR="eval_logs/$dirbase"
+        mkdir -p "$LOGDIR"
+        logfile="$LOGDIR/${name}_all.log"
 
-    CUDA_VISIBLE_DEVICES=0 python run_lm_eval.py $COMMON --path "$ckpt" \
-        --tasks lambada_openai,boolq \
-        > "$LOGDIR/${name}_gpu0_p2.log" 2>&1 &
-    p2=$!
+        echo "  [GPU $gpu] $dirbase / $name -> $logfile"
 
-    CUDA_VISIBLE_DEVICES=0 python run_lm_eval.py $COMMON --path "$ckpt" \
-        --tasks arc_challenge,openbookqa \
-        > "$LOGDIR/${name}_gpu0_p3.log" 2>&1 &
-    p3=$!
+        CUDA_VISIBLE_DEVICES=$gpu python run_lm_eval.py $COMMON --path "$ckpt" \
+            --tasks "$ALL_TASKS" \
+            > "$logfile" 2>&1 &
+        PIDS+=($!)
+        LABELS+=("$dirbase/$name")
+        slot=$((slot + 1))
+    done
 
-    # GPU 1 - 3 processes
-    CUDA_VISIBLE_DEVICES=1 python run_lm_eval.py $COMMON --path "$ckpt" \
-        --tasks arc_easy,piqa \
-        > "$LOGDIR/${name}_gpu1_p1.log" 2>&1 &
-    p4=$!
-
-    CUDA_VISIBLE_DEVICES=1 python run_lm_eval.py $COMMON --path "$ckpt" \
-        --tasks winogrande \
-        > "$LOGDIR/${name}_gpu1_p2.log" 2>&1 &
-    p5=$!
-
-    # mmlu is not in the task list but GPU 1 proc 3 is free
-    # if you want to add more tasks, uncomment:
-    # CUDA_VISIBLE_DEVICES=1 python run_lm_eval.py $COMMON --path "$ckpt" \
-    #     --tasks mmlu \
-    #     > "$LOGDIR/${name}_gpu1_p3.log" 2>&1 &
-    # p6=$!
-
-    echo "  GPU0: hellaswag | lambada+boolq | arc_c+obqa"
-    echo "  GPU1: arc_e+piqa | winogrande | (free)"
-    echo "  Logs: $LOGDIR/${name}_*.log"
-    echo "  Waiting for all 5 processes..."
+    echo "  Waiting for ${#PIDS[@]} model(s)..."
 
     FAIL=0
-    for pid in $p1 $p2 $p3 $p4 $p5; do
-        wait $pid || FAIL=$((FAIL+1))
+    for j in "${!PIDS[@]}"; do
+        if ! wait "${PIDS[$j]}"; then
+            echo "  [FAIL] ${LABELS[$j]}"
+            FAIL=$((FAIL+1))
+        else
+            echo "  [OK]   ${LABELS[$j]}"
+        fi
     done
 
-    if [ $FAIL -gt 0 ]; then
-        echo "  [WARN] $FAIL process(es) failed for $name, check logs"
-    else
-        echo "  [OK] All tasks done for $name"
-    fi
-
-    # Print summary from logs
-    echo ""
-    echo "--- Results for $name ---"
-    for log in "$LOGDIR/${name}"_*.log; do
-        grep -E "^\|.*\|.*\|.*acc" "$log" 2>/dev/null || true
+    # Print results for this batch
+    for (( i=idx; i<batch_end; i++ )); do
+        ckpt="${ALL_CKPTS[$i]}"
+        dirbase=$(basename "$(dirname "$ckpt")")
+        name=$(basename "$ckpt" .pth)
+        logfile="eval_logs/$dirbase/${name}_all.log"
+        echo ""
+        echo "--- Results: $dirbase / $name ---"
+        grep -E "^\|.*\|.*\|.*acc" "$logfile" 2>/dev/null || echo "  (no results, check log)"
+        echo "--------------------------------"
     done
-    echo "-------------------------"
+
+    idx=$batch_end
 done
 
 echo ""
 echo "=========================================="
-echo "All ${#ALL_CKPTS[@]} checkpoints evaluated!"
+echo "All $total checkpoints evaluated!"
 echo "Logs saved to: eval_logs/"
