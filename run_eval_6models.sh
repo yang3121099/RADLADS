@@ -29,8 +29,8 @@ EVAL_GROUP="all"
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE=1 ;;
-        all|fast|generative) EVAL_GROUP="$arg" ;;
-        *) echo "[ERROR] Unknown argument: $arg (use: all, fast, generative, --force)"; exit 1 ;;
+        all|fast|generative|base_retain|chatbot|advanced|new) EVAL_GROUP="$arg" ;;
+        *) echo "[ERROR] Unknown argument: $arg (use: all, fast, generative, base_retain, chatbot, advanced, new, --force)"; exit 1 ;;
     esac
 done
 

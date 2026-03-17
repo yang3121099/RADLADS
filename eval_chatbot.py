@@ -54,6 +54,8 @@ TASK_GROUPS = {
     "chatbot": "truthfulqa_mc2,arc_challenge,mmlu,boolq",
     # 进阶知识推理 (loglikelihood, 快)
     "advanced": "mmlu_pro,gpqa_diamond_zeroshot",
+    # 新增指标 = chatbot + advanced (不含 base_retain)
+    "new": "truthfulqa_mc2,mmlu,boolq,mmlu_pro,gpqa_diamond_zeroshot",
     # 生成式评测 (generate_until, 慢)
     "generative": "gsm8k,ifeval,bbh_zeroshot",
     # 快速全量 = base_retain + chatbot + advanced (全部 loglikelihood)
