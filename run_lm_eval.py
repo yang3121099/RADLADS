@@ -195,7 +195,7 @@ class EvalHarnessAdapter(TemplateLM):
         return out_str
 
     @torch.no_grad()
-    def batched_generate(self, contexts, gen_kwargs_list):
+    def batched_generate(self, contexts, gen_kwargs_list, batch_idx=0, total_batches=0):
         """Batched greedy generation for multiple contexts simultaneously.
 
         Processes all contexts in a single batch per generation step, re-forwarding
@@ -215,6 +215,10 @@ class EvalHarnessAdapter(TemplateLM):
 
         generated_tokens = [[] for _ in range(B)]
         finished = [False] * B
+
+        _is_tty = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+        _last_pct_printed = -1
+        _t0 = time.time()
 
         for step in range(max_new_tokens):
             if all(finished):
@@ -256,6 +260,26 @@ class EvalHarnessAdapter(TemplateLM):
                 else:
                     generated_tokens[i].append(next_token)
 
+            # Progress reporting
+            n_active = sum(1 for f in finished if not f)
+            elapsed = time.time() - _t0
+            step_done = step + 1
+            if _is_tty:
+                print(f'\r  batch {batch_idx+1}/{total_batches} | step {step_done}/{max_new_tokens} | active {n_active}/{B} | {elapsed:.1f}s', end='', flush=True)
+            else:
+                pct = step_done * 100 // max_new_tokens
+                pct_step = pct // 10 * 10
+                if pct_step > _last_pct_printed:
+                    _last_pct_printed = pct_step
+                    print(f'  batch {batch_idx+1}/{total_batches} | step {step_done}/{max_new_tokens} ({pct}%) | active {n_active}/{B} | {elapsed:.1f}s', flush=True)
+
+        elapsed = time.time() - _t0
+        actual_steps = min(step + 1, max_new_tokens) if max_new_tokens > 0 else 0
+        if _is_tty:
+            print(f'\r  batch {batch_idx+1}/{total_batches} | done {actual_steps} steps in {elapsed:.1f}s ({B} seqs, {B*actual_steps:.0f} tokens)' + ' ' * 20, flush=True)
+        else:
+            print(f'  batch {batch_idx+1}/{total_batches} | done {actual_steps} steps in {elapsed:.1f}s ({B} seqs, {B*actual_steps:.0f} tokens)', flush=True)
+
         return [self.tokenizer.decode(gen) for gen in generated_tokens]
 
     @torch.no_grad()
@@ -279,8 +303,12 @@ class EvalHarnessAdapter(TemplateLM):
 
         B = self.batch_size_per_gpu
         total_batches = (len(ordered) + B - 1) // B
+        total_requests = len(ordered)
+        requests_done = 0
 
-        for nb in tqdm(range(0, len(ordered), B), desc="Running batched generation", total=total_batches):
+        print(f'Running batched generation: {total_requests} requests, batch size {B}, {total_batches} batches', flush=True)
+
+        for batch_idx, nb in enumerate(range(0, len(ordered), B)):
             batch = ordered[nb:nb + B]
             contexts = [ctx for ctx, _ in batch]
             gen_kwargs_list = [gk for _, gk in batch]
@@ -289,13 +317,17 @@ class EvalHarnessAdapter(TemplateLM):
                 # Single sequence: use efficient stateful generation
                 out_strs = [self.greedy_generate(contexts[0])]
             else:
-                out_strs = self.batched_generate(contexts, gen_kwargs_list)
+                out_strs = self.batched_generate(contexts, gen_kwargs_list, batch_idx=batch_idx, total_batches=total_batches)
 
             for out_str, gen_kwargs in zip(out_strs, gen_kwargs_list):
                 for term in gen_kwargs['until']:
                     out_str = out_str.split(term)[0]
                 res.append(out_str)
 
+            requests_done += len(contexts)
+            print(f'  progress: {requests_done}/{total_requests} requests done ({requests_done*100//total_requests}%)', flush=True)
+
+        print(f'Batched generation complete: {total_requests} requests processed', flush=True)
         return reord.get_original(res)
 
     @property
