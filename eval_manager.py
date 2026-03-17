@@ -557,10 +557,95 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
     print(f"[INFO] Eval types: {', '.join(sorted(eval_types))}")
     print(f"[INFO] {workers_per_gpu} workers/GPU, {total_workers} total concurrent processes, bsz={bsz}")
     print(f"[INFO] Logs: {logdir}/<dir>_<checkpoint>_<eval_type>.log")
-    print(f"[INFO] Monitor: tail -f {logdir}/*.log")
 
     # Use semaphores to limit concurrency per GPU
     gpu_semaphores = {gpu0: threading.Semaphore(workers_per_gpu), gpu1: threading.Semaphore(workers_per_gpu)}
+
+    # Track active tasks for dashboard
+    task_status = {}  # label -> {state, gpu, pct, logfile, eval_type}
+    task_lock = threading.Lock()
+    dashboard_stop = threading.Event()
+
+    def _parse_progress(logfile):
+        """Read last progress percentage from a log file."""
+        try:
+            with open(logfile, 'rb') as f:
+                # Read last 2KB to find latest progress line
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 2048))
+                tail = f.read().decode('utf-8', errors='replace')
+            # Look for percentage pattern in our progress bars
+            # Format: [██░░] 35% (120/340 batches)
+            matches = re.findall(r'(\d+)%\s+\(\d+/\d+\s+batches\)', tail)
+            if matches:
+                return int(matches[-1])
+            # Check for setup phase indicators
+            if 'Loading model' in tail or 'RWKV_MODEL_TYPE' in tail:
+                return 0
+            if 'Overwriting default' in tail or 'Running' in tail:
+                return 0
+        except (FileNotFoundError, OSError):
+            pass
+        return -1  # unknown
+
+    def _dashboard_thread():
+        """Live dashboard that redraws every 2 seconds."""
+        _is_tty = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+        if not _is_tty:
+            return  # Don't draw dashboard for non-TTY
+        prev_lines = 0
+        while not dashboard_stop.is_set():
+            with task_lock:
+                snapshot = dict(task_status)
+            if not snapshot:
+                dashboard_stop.wait(1)
+                continue
+
+            # Move cursor up to overwrite previous dashboard
+            if prev_lines > 0:
+                sys.stdout.write(f"\033[{prev_lines}A\033[J")
+
+            lines = []
+            lines.append(f"{'─' * 70}")
+            # Separate by state
+            running = [(k, v) for k, v in sorted(snapshot.items()) if v['state'] == 'running']
+            waiting = [(k, v) for k, v in sorted(snapshot.items()) if v['state'] == 'waiting']
+            done_list = [(k, v) for k, v in sorted(snapshot.items()) if v['state'] in ('done', 'fail')]
+
+            for label, info in running:
+                pct = _parse_progress(info['logfile'])
+                if pct < 0:
+                    pct_str = "..."
+                    bar = '·' * 25
+                else:
+                    filled = 25 * pct // 100
+                    bar = '█' * filled + '░' * (25 - filled)
+                    pct_str = f"{pct:3d}%"
+                # Shorten label for display
+                short = label.split('/')[-1] if '/' in label else label
+                if len(short) > 30:
+                    short = short[:27] + "..."
+                lines.append(f"  GPU{info['gpu']} ▶ {short:30s} [{bar}] {pct_str}")
+
+            for label, info in waiting:
+                short = label.split('/')[-1] if '/' in label else label
+                if len(short) > 30:
+                    short = short[:27] + "..."
+                lines.append(f"  GPU{info['gpu']} ⏳ {short:30s} [waiting]")
+
+            completed = len(done_list)
+            failed_ct = sum(1 for _, v in done_list if v['state'] == 'fail')
+            total = len(snapshot)
+            lines.append(f"{'─' * 70}")
+            fail_str = f" ({failed_ct} failed)" if failed_ct else ""
+            lines.append(f"  Progress: {completed}/{total} done{fail_str}, {len(running)} running, {len(waiting)} queued")
+
+            output = '\n'.join(lines) + '\n'
+            sys.stdout.write(output)
+            sys.stdout.flush()
+            prev_lines = len(lines)
+            dashboard_stop.wait(2)
 
     def run_task(ckpt, eval_type, gpu_id):
         """Run a single eval task as a subprocess."""
@@ -568,6 +653,9 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
         dirbase = os.path.basename(os.path.dirname(ckpt))
         label = f"{dirbase}/{basename}"
         logfile = os.path.join(logdir, f"{dirbase}_{basename}_{eval_type}.log")
+        with task_lock:
+            task_status[label] = {'state': 'waiting', 'gpu': gpu_id, 'pct': 0,
+                                  'logfile': logfile, 'eval_type': eval_type}
         sem = gpu_semaphores[gpu_id]
         sem.acquire()
         try:
@@ -579,40 +667,61 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
             if force:
                 cmd.append("--force")
             env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_id), "PYTHONUNBUFFERED": "1"}
-            print(f"  [GPU{gpu_id}] START {eval_type:10s} {label}")
+            with task_lock:
+                task_status[label]['state'] = 'running'
             with open(logfile, "w") as lf:
                 proc = subprocess.run(cmd, env=env, stdout=lf, stderr=subprocess.STDOUT, text=True)
-            status = "OK" if proc.returncode == 0 else f"FAIL(rc={proc.returncode})"
-            print(f"  [GPU{gpu_id}]  DONE {eval_type:10s} {label} [{status}]")
+            status = "done" if proc.returncode == 0 else "fail"
+            with task_lock:
+                task_status[label]['state'] = status
             if proc.returncode != 0:
-                # Print last few lines from log on failure
+                # Log failure details
                 with open(logfile, "r") as lf:
                     lines = lf.readlines()
-                    for line in lines[-5:]:
-                        print(f"         {line.rstrip()}")
+                    err_lines = [l.rstrip() for l in lines[-5:]]
+                # Will be printed after dashboard stops
             return (label, eval_type, proc.returncode)
         finally:
             sem.release()
+
+    # Start live dashboard
+    dash_thread = threading.Thread(target=_dashboard_thread, daemon=True)
+    dash_thread.start()
 
     # Submit all tasks to a thread pool
     with ThreadPoolExecutor(max_workers=total_workers) as pool:
         futures = {pool.submit(run_task, ckpt, etype, gpu): (ckpt, etype)
                    for ckpt, etype, gpu in tasks}
 
-        done_count = 0
         failed = []
         for future in as_completed(futures):
-            done_count += 1
             label, eval_type, rc = future.result()
             if rc != 0:
                 failed.append(f"{label}/{eval_type}")
-            if done_count % 4 == 0 or done_count == total_tasks:
-                print(f"[PROGRESS] {done_count}/{total_tasks} tasks complete")
 
+    # Stop dashboard and print final summary
+    dashboard_stop.set()
+    dash_thread.join(timeout=3)
+    # Clear dashboard area
+    _is_tty = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+    if _is_tty:
+        # Move up and clear (max possible dashboard lines)
+        n_lines = len(task_status) + 4
+        sys.stdout.write(f"\033[{n_lines}A\033[J")
+        sys.stdout.flush()
+
+    # Print final results
+    print(f"\n{'═' * 70}")
+    print(f"  EVAL COMPLETE: {total_tasks} tasks")
+    print(f"{'═' * 70}")
+    for label, info in sorted(task_status.items()):
+        icon = "✓" if info['state'] == 'done' else "✗"
+        print(f"  {icon} GPU{info['gpu']} {label}")
     if failed:
-        print(f"\n[WARN] {len(failed)} tasks failed: {', '.join(failed)}")
+        print(f"\n  [WARN] {len(failed)} tasks failed: {', '.join(failed)}")
     else:
-        print(f"\n[OK] All {total_tasks} tasks completed successfully")
+        print(f"\n  [OK] All {total_tasks} tasks completed successfully")
+    print(f"{'═' * 70}")
 
     generate_summary()
 
