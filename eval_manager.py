@@ -12,6 +12,9 @@
     # 测评目录下所有 checkpoint (跳过已完成的)
     python eval_manager.py eval_all --dir out/L28-D3584-qwerky7_qwen2-5_continue
 
+    # 测评 out/ 下所有目录的所有 checkpoint（双卡并行，每卡3进程）
+    python eval_manager.py eval_all_dirs
+
     # 测评 HuggingFace baseline 模型
     python eval_manager.py eval_baseline --model Qwen/Qwen2.5-7B
 
@@ -483,6 +486,122 @@ def run_baseline_supergpqa_eval(model_name, bsz="auto", gpu=None):
     return results
 
 
+def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, workers_per_gpu=3):
+    """Evaluate ALL checkpoint directories under base_dir using 2 GPUs in parallel.
+
+    Scans all out/*/ directories, collects all checkpoints, and distributes
+    tasks across GPUs with multiple workers.
+
+    Usage:
+        python eval_manager.py eval_all_dirs
+        python eval_manager.py eval_all_dirs --base-dir out --bsz 4 --workers-per-gpu 3
+    """
+    import subprocess
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Collect all checkpoints across all dirs
+    all_ckpts = []
+    dirs = sorted(glob.glob(os.path.join(base_dir, "*")))
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        ckpts = sorted(glob.glob(os.path.join(d, "rwkv-*.pth")))
+        if ckpts:
+            all_ckpts.extend(ckpts)
+            print(f"  {d}: {len(ckpts)} checkpoint(s)")
+
+    if not all_ckpts:
+        print(f"[ERROR] No checkpoints found under {base_dir}/")
+        return
+
+    log = load_log()
+
+    # Build task list: (checkpoint_path, eval_type, gpu_id)
+    # Round-robin GPU assignment per checkpoint, both eval types on same GPU
+    tasks = []
+    gpu_cycle = [gpu0, gpu1]
+    for i, ckpt in enumerate(all_ckpts):
+        key = get_ckpt_key(ckpt)
+        if key not in log:
+            log[key] = _init_log_entry(ckpt)
+        entry = log.get(key, {})
+        assigned_gpu = gpu_cycle[i % len(gpu_cycle)]
+
+        need_standard = force or not entry.get("standard_done", False)
+        need_supergpqa = force or not entry.get("supergpqa_done", False)
+
+        if need_standard:
+            tasks.append((ckpt, "standard", assigned_gpu))
+        if need_supergpqa:
+            tasks.append((ckpt, "supergpqa", assigned_gpu))
+
+    save_log(log)
+
+    if not tasks:
+        print(f"[INFO] All {len(all_ckpts)} checkpoints already evaluated, nothing to do")
+        generate_summary()
+        return
+
+    total_tasks = len(tasks)
+    total_ckpts = len(set(t[0] for t in tasks))
+    total_workers = workers_per_gpu * 2
+    print(f"\n[INFO] {total_tasks} tasks for {total_ckpts} checkpoints across {len(dirs)} dirs")
+    print(f"[INFO] {workers_per_gpu} workers/GPU, {total_workers} total concurrent processes, bsz={bsz}")
+
+    # Use semaphores to limit concurrency per GPU
+    gpu_semaphores = {gpu0: threading.Semaphore(workers_per_gpu), gpu1: threading.Semaphore(workers_per_gpu)}
+
+    def run_task(ckpt, eval_type, gpu_id):
+        """Run a single eval task as a subprocess."""
+        basename = os.path.basename(ckpt)
+        dirbase = os.path.basename(os.path.dirname(ckpt))
+        label = f"{dirbase}/{basename}"
+        sem = gpu_semaphores[gpu_id]
+        sem.acquire()
+        try:
+            cmd = [
+                sys.executable, "eval_manager.py", "eval",
+                "--path", ckpt, "--bsz", str(bsz), "--gpu", str(gpu_id),
+                "--only", eval_type,
+            ]
+            if force:
+                cmd.append("--force")
+            env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_id)}
+            print(f"  [GPU{gpu_id}] START {eval_type:10s} {label}")
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            status = "OK" if proc.returncode == 0 else f"FAIL(rc={proc.returncode})"
+            print(f"  [GPU{gpu_id}]  DONE {eval_type:10s} {label} [{status}]")
+            if proc.returncode != 0 and proc.stderr:
+                for line in proc.stderr.strip().split('\n')[-5:]:
+                    print(f"         {line}")
+            return (label, eval_type, proc.returncode)
+        finally:
+            sem.release()
+
+    # Submit all tasks to a thread pool
+    with ThreadPoolExecutor(max_workers=total_workers) as pool:
+        futures = {pool.submit(run_task, ckpt, etype, gpu): (ckpt, etype)
+                   for ckpt, etype, gpu in tasks}
+
+        done_count = 0
+        failed = []
+        for future in as_completed(futures):
+            done_count += 1
+            label, eval_type, rc = future.result()
+            if rc != 0:
+                failed.append(f"{label}/{eval_type}")
+            if done_count % 4 == 0 or done_count == total_tasks:
+                print(f"[PROGRESS] {done_count}/{total_tasks} tasks complete")
+
+    if failed:
+        print(f"\n[WARN] {len(failed)} tasks failed: {', '.join(failed)}")
+    else:
+        print(f"\n[OK] All {total_tasks} tasks completed successfully")
+
+    generate_summary()
+
+
 def eval_baseline(model_name, bsz="auto", force=False, gpu=None, only=None):
     """Evaluate a HuggingFace baseline model and save results to the same log."""
     log = load_log()
@@ -634,6 +753,15 @@ def main():
     p_par.add_argument("--workers-per-gpu", type=int, default=2,
                        help="Number of concurrent eval processes per GPU (default: 2)")
 
+    p_dirs = sub.add_parser("eval_all_dirs", help="Evaluate ALL checkpoint dirs under out/")
+    p_dirs.add_argument("--base-dir", default="out", help="Base directory to scan (default: out)")
+    p_dirs.add_argument("--bsz", type=int, default=4)
+    p_dirs.add_argument("--force", action="store_true")
+    p_dirs.add_argument("--gpu0", type=int, default=0)
+    p_dirs.add_argument("--gpu1", type=int, default=1)
+    p_dirs.add_argument("--workers-per-gpu", type=int, default=3,
+                       help="Number of concurrent eval processes per GPU (default: 3)")
+
     p_base = sub.add_parser("eval_baseline", help="Evaluate HuggingFace baseline model")
     p_base.add_argument("--model", required=True, help="HF model name, e.g. Qwen/Qwen2.5-7B")
     p_base.add_argument("--bsz", default="auto")
@@ -653,6 +781,8 @@ def main():
         eval_all(args.dir, args.bsz, args.force)
     elif args.command == "eval_all_parallel":
         eval_all_parallel(args.dir, args.bsz, args.force, args.gpu0, args.gpu1, args.workers_per_gpu)
+    elif args.command == "eval_all_dirs":
+        eval_all_dirs_parallel(args.base_dir, args.bsz, args.force, args.gpu0, args.gpu1, args.workers_per_gpu)
     elif args.command == "eval_baseline":
         eval_baseline(args.model, args.bsz, args.force, gpu=args.gpu, only=args.only)
         generate_summary()
