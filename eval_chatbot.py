@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
 """
-Chatbot 模型测评脚本 — 面向指令遵循和对话能力的 benchmark 组合
+Chatbot 模型测评脚本 — 全量 benchmark 评测
 
 === 测评分组 ===
 
-1. 基座保持指标 (base_retain) — 监控灾难性遗忘:
+1. 基座保持指标 (base_retain) — 监控灾难性遗忘 [loglikelihood, 快]:
    - lambada_openai, hellaswag, winogrande, piqa
    这些指标应与基座模型保持接近，下降 >2% 说明训练过度
 
-2. Chatbot 能力指标 (chatbot) — 衡量指令遵循和推理提升:
+2. Chatbot 能力指标 (chatbot) — 衡量指令遵循和推理提升 [loglikelihood, 快]:
    - truthfulqa_mc2   : 真实性 (SFT 应提升)
    - arc_challenge     : 推理能力 (应保持或提升)
    - mmlu              : 知识广度 (应保持)
-   - gsm8k             : 数学推理 (应保持或提升)
    - boolq             : 阅读理解 (应保持)
 
-注: IFEval 需要生成式评测，当前 RWKV adapter 的 generate_until 较慢，
-    暂不纳入自动化流程。如需手动测试指令遵循，可单独运行。
+3. 进阶指标 (advanced) — 高难度知识推理 [loglikelihood, 快]:
+   - mmlu_pro          : MMLU 加强版 (10选1, 更难)
+   - gpqa_diamond_zeroshot : 博士级科学问答 (198题)
+
+4. 生成式指标 (generative) — 需要 generate_until [慢]:
+   - gsm8k             : 数学推理 (1319题, 生成+精确匹配)
+   - ifeval            : 指令遵循 (541题, 规则评分, 最重要的 chatbot 指标)
+   - bbh_zeroshot      : Big-Bench Hard (23子任务, 生成+精确匹配)
+
+注: generative 组因 RWKV adapter 的 generate_until 为逐条生成，速度较慢。
+    建议先跑 fast 组 (base_retain+chatbot+advanced)，再跑 generative 组。
 
 用法:
     python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth
-    python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth --group chatbot
+    python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth --group fast
+    python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth --group generative
     python eval_chatbot.py eval_all --dir out/L28-D3584-qwerky7_qwen2-6_chatbot_ultrachat
     python eval_chatbot.py eval_baseline --model Qwen/Qwen2.5-7B-Instruct
     python eval_chatbot.py summary
@@ -39,9 +48,18 @@ SUMMARY_MD = "eval_chatbot_summary.md"
 
 # Task groups
 TASK_GROUPS = {
+    # 基座保持 (loglikelihood, 快)
     "base_retain": "lambada_openai,hellaswag,winogrande,piqa",
-    "chatbot": "truthfulqa_mc2,arc_challenge,mmlu,gsm8k,boolq",
-    "all": "lambada_openai,hellaswag,winogrande,piqa,truthfulqa_mc2,arc_challenge,mmlu,gsm8k,boolq",
+    # Chatbot 核心 (loglikelihood, 快)
+    "chatbot": "truthfulqa_mc2,arc_challenge,mmlu,boolq",
+    # 进阶知识推理 (loglikelihood, 快)
+    "advanced": "mmlu_pro,gpqa_diamond_zeroshot",
+    # 生成式评测 (generate_until, 慢)
+    "generative": "gsm8k,ifeval,bbh_zeroshot",
+    # 快速全量 = base_retain + chatbot + advanced (全部 loglikelihood)
+    "fast": "lambada_openai,hellaswag,winogrande,piqa,truthfulqa_mc2,arc_challenge,mmlu,boolq,mmlu_pro,gpqa_diamond_zeroshot",
+    # 全量
+    "all": "lambada_openai,hellaswag,winogrande,piqa,truthfulqa_mc2,arc_challenge,mmlu,boolq,mmlu_pro,gpqa_diamond_zeroshot,gsm8k,ifeval,bbh_zeroshot",
 }
 
 # RADLADS model eval args
@@ -62,16 +80,24 @@ COL_SHORT = {
     "truthfulqa_mc2": "tqa_mc2",
     "arc_challenge": "arc_c",
     "mmlu": "mmlu",
-    "gsm8k": "gsm8k",
     "boolq": "boolq",
+    "mmlu_pro": "mmlu_pro",
+    "gpqa_diamond_zeroshot": "gpqa_d",
+    "gsm8k": "gsm8k",
+    "ifeval": "ifeval",
+    "bbh_zeroshot": "bbh",
 }
 
-# Display order
+# Display order — grouped by category
 TASK_ORDER = [
-    # base retain
+    # base retain (loglikelihood)
     "lambada_openai", "hellaswag", "winogrande", "piqa",
-    # chatbot
-    "truthfulqa_mc2", "arc_challenge", "mmlu", "gsm8k", "boolq",
+    # chatbot (loglikelihood)
+    "truthfulqa_mc2", "arc_challenge", "mmlu", "boolq",
+    # advanced (loglikelihood)
+    "mmlu_pro", "gpqa_diamond_zeroshot",
+    # generative (generate_until)
+    "gsm8k", "ifeval", "bbh_zeroshot",
 ]
 
 
@@ -96,7 +122,11 @@ def is_eval_complete(log, ckpt_key, group="all"):
         return False
     entry = log[ckpt_key]
     if group == "all":
-        return entry.get("base_retain_done", False) and entry.get("chatbot_done", False)
+        return all(entry.get(f"{g}_done", False)
+                   for g in ["base_retain", "chatbot", "advanced", "generative"])
+    if group == "fast":
+        return all(entry.get(f"{g}_done", False)
+                   for g in ["base_retain", "chatbot", "advanced"])
     return entry.get(f"{group}_done", False)
 
 
@@ -191,16 +221,26 @@ def _parse_lm_eval_results(stdout):
         for line in stdout.split('\n'):
             line = line.strip()
             m = re.match(
-                r"\|\s*(\w+)\s*\|.*\|\s*(acc(?:_norm)?|exact_match|mc2)\s*\|.*\|\s*([\d.]+)\s*\|",
+                r"\|\s*([\w]+(?:_[\w]+)*)\s*\|.*\|\s*(acc(?:_norm)?|exact_match|mc2|prompt_level_strict_acc|inst_level_strict_acc)\s*\|.*\|\s*([\d.]+)\s*\|",
                 line,
             )
             if m:
                 task = m.group(1)
                 metric = m.group(2)
                 val = round(float(m.group(3)) * 100, 2)
-                # acc_norm takes priority over acc
-                if task not in results or metric in ("acc_norm", "mc2"):
+                # Priority: acc_norm > mc2 > prompt_level_strict_acc > acc > exact_match
+                priority = {"acc_norm": 5, "mc2": 4, "prompt_level_strict_acc": 3, "acc": 2, "exact_match": 1, "inst_level_strict_acc": 0}
+                if task not in results or priority.get(metric, 0) > priority.get(results.get(f"_metric_{task}"), -1):
                     results[task] = val
+                    results[f"_metric_{task}"] = priority.get(metric, 0)
+
+    # Clean up internal metric tracking keys
+    results = {k: v for k, v in results.items() if not k.startswith("_metric_")}
+
+    # Aggregate BBH subtasks into bbh_zeroshot average if present
+    bbh_keys = [k for k in results if k.startswith("bbh_") and k != "bbh_zeroshot"]
+    if bbh_keys:
+        results["bbh_zeroshot"] = round(sum(results[k] for k in bbh_keys) / len(bbh_keys), 2)
 
     if not results:
         print("[WARN] Could not parse eval results from output")
@@ -224,13 +264,16 @@ def _save_result_locked(ckpt_key, path, group, results):
                 "label": label,
                 "base_retain_done": False,
                 "chatbot_done": False,
+                "advanced_done": False,
+                "generative_done": False,
                 "results": {},
             }
         log[ckpt_key]["results"].update(results)
         log[ckpt_key][f"{group}_done"] = True
         log[ckpt_key][f"{group}_eval_time"] = datetime.now().isoformat()
-        # Mark all done if both groups complete
-        if log[ckpt_key].get("base_retain_done") and log[ckpt_key].get("chatbot_done"):
+        # Mark all done if all groups complete
+        all_groups = ["base_retain", "chatbot", "advanced", "generative"]
+        if all(log[ckpt_key].get(f"{g}_done", False) for g in all_groups):
             log[ckpt_key]["done"] = True
         save_log(log)
         fcntl.flock(lock_f, fcntl.LOCK_UN)
@@ -247,7 +290,9 @@ def eval_checkpoint(path, bsz=4, force=False, gpu=None, group="all"):
 
     groups_to_run = []
     if group == "all":
-        groups_to_run = ["base_retain", "chatbot"]
+        groups_to_run = ["base_retain", "chatbot", "advanced", "generative"]
+    elif group == "fast":
+        groups_to_run = ["base_retain", "chatbot", "advanced"]
     else:
         groups_to_run = [group]
 
@@ -299,7 +344,12 @@ def eval_baseline(model_name, bsz="auto", force=False, gpu=None, group="all"):
     if gpu is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
-    groups_to_run = ["base_retain", "chatbot"] if group == "all" else [group]
+    if group == "all":
+        groups_to_run = ["base_retain", "chatbot", "advanced", "generative"]
+    elif group == "fast":
+        groups_to_run = ["base_retain", "chatbot", "advanced"]
+    else:
+        groups_to_run = [group]
 
     for g in groups_to_run:
         if not force and ckpt_key in log and log[ckpt_key].get(f"{g}_done"):
@@ -350,20 +400,24 @@ def generate_summary():
 
     lines.append("## Task Groups\n")
     lines.append("- **Base Retain** (lambada, hella, wino, piqa): 应与基座保持接近, 下降>2%说明过拟合")
-    lines.append("- **Chatbot** (tqa_mc2, arc_c, mmlu, gsm8k, boolq): 指令遵循/推理, SFT 应提升或保持\n")
+    lines.append("- **Chatbot** (tqa_mc2, arc_c, mmlu, boolq): 指令遵循/推理, SFT 应提升或保持")
+    lines.append("- **Advanced** (mmlu_pro, gpqa_d): 高难度知识推理")
+    lines.append("- **Generative** (gsm8k, ifeval, bbh): 生成式评测 (数学/指令遵循/推理)\n")
 
     # Build table
     # Determine group boundaries
     base_retain_tasks = [t for t in TASK_ORDER[:4] if t in all_present]
-    chatbot_tasks = [t for t in TASK_ORDER[4:] if t in all_present]
+    chatbot_tasks = [t for t in TASK_ORDER[4:8] if t in all_present]
+    advanced_tasks = [t for t in TASK_ORDER[8:10] if t in all_present]
+    generative_tasks = [t for t in TASK_ORDER[10:] if t in all_present]
 
     header = "| Model | Tokens |"
     separator = "|---|---|"
     for t in ordered_tasks:
         header += f" {COL_SHORT.get(t, t)} |"
         separator += "---|"
-    header += " base_avg | chat_avg | **total** |"
-    separator += "---|---|---|"
+    header += " base_avg | chat_avg | adv_avg | gen_avg | **total** |"
+    separator += "---|---|---|---|---|"
 
     lines.append(header)
     lines.append(separator)
@@ -384,6 +438,8 @@ def generate_summary():
 
         base_vals = []
         chat_vals = []
+        adv_vals = []
+        gen_vals = []
         for t in ordered_tasks:
             val = entry.get("results", {}).get(t)
             if val is not None:
@@ -399,16 +455,22 @@ def generate_summary():
                 row += f" {val:.1f}{delta_str} |"
                 if t in base_retain_tasks:
                     base_vals.append(val)
-                if t in chatbot_tasks:
+                elif t in chatbot_tasks:
                     chat_vals.append(val)
+                elif t in advanced_tasks:
+                    adv_vals.append(val)
+                elif t in generative_tasks:
+                    gen_vals.append(val)
             else:
                 row += " - |"
 
         base_avg = sum(base_vals) / len(base_vals) if base_vals else 0
         chat_avg = sum(chat_vals) / len(chat_vals) if chat_vals else 0
-        all_vals = base_vals + chat_vals
+        adv_avg = sum(adv_vals) / len(adv_vals) if adv_vals else 0
+        gen_avg = sum(gen_vals) / len(gen_vals) if gen_vals else 0
+        all_vals = base_vals + chat_vals + adv_vals + gen_vals
         total_avg = sum(all_vals) / len(all_vals) if all_vals else 0
-        row += f" {base_avg:.1f} | {chat_avg:.1f} | **{total_avg:.1f}** |"
+        row += f" {base_avg:.1f} | {chat_avg:.1f} | {adv_avg:.1f} | {gen_avg:.1f} | **{total_avg:.1f}** |"
 
         lines.append(row)
 
@@ -431,7 +493,7 @@ def main():
     p_eval.add_argument("--bsz", type=int, default=4)
     p_eval.add_argument("--force", action="store_true")
     p_eval.add_argument("--gpu", type=int, default=None)
-    p_eval.add_argument("--group", choices=["all", "base_retain", "chatbot"], default="all",
+    p_eval.add_argument("--group", choices=["all", "fast", "base_retain", "chatbot", "advanced", "generative"], default="all",
                         help="Which task group to evaluate (default: all)")
 
     p_all = sub.add_parser("eval_all", help="Evaluate all checkpoints in directory")
@@ -439,14 +501,14 @@ def main():
     p_all.add_argument("--bsz", type=int, default=4)
     p_all.add_argument("--force", action="store_true")
     p_all.add_argument("--gpu", type=int, default=None)
-    p_all.add_argument("--group", choices=["all", "base_retain", "chatbot"], default="all")
+    p_all.add_argument("--group", choices=["all", "fast", "base_retain", "chatbot", "advanced", "generative"], default="all")
 
     p_base = sub.add_parser("eval_baseline", help="Evaluate HuggingFace baseline model")
     p_base.add_argument("--model", required=True)
     p_base.add_argument("--bsz", default="auto")
     p_base.add_argument("--force", action="store_true")
     p_base.add_argument("--gpu", type=int, default=None)
-    p_base.add_argument("--group", choices=["all", "base_retain", "chatbot"], default="all")
+    p_base.add_argument("--group", choices=["all", "fast", "base_retain", "chatbot", "advanced", "generative"], default="all")
 
     p_sum = sub.add_parser("summary", help="Generate markdown summary")
     p_sum.add_argument("--log", default=None)
