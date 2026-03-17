@@ -149,7 +149,7 @@ def run_radlads_eval(path, tasks, bsz=1, env=None):
     """Run lm_eval on a RADLADS checkpoint."""
     import subprocess
     cmd = [
-        sys.executable, "run_lm_eval.py",
+        sys.executable, "-u", "run_lm_eval.py",
         *COMMON_ARGS,
         "--path", path,
         "--tasks", tasks,
@@ -158,24 +158,35 @@ def run_radlads_eval(path, tasks, bsz=1, env=None):
     print(f"\n[EVAL] Running: {path}")
     print(f"[EVAL] Tasks: {tasks}")
     print(f"[EVAL] Command: {' '.join(cmd)}")
+    sys.stdout.flush()
 
     if env is None:
         env = {**os.environ}
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    print(result.stdout)
-    if result.stderr:
-        for line in result.stderr.split('\n'):
-            if 'error' in line.lower() or 'traceback' in line.lower():
-                print(f"[STDERR] {line}")
+    env["PYTHONUNBUFFERED"] = "1"
 
-    return _parse_lm_eval_results(result.stdout)
+    # Stream output in real-time (for log file progress) while capturing for parsing
+    stdout_lines = []
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1, env=env)
+    for line in proc.stdout:
+        print(line, end='', flush=True)
+        stdout_lines.append(line)
+    stderr = proc.stderr.read()
+    proc.wait()
+
+    if stderr:
+        for line in stderr.split('\n'):
+            if 'error' in line.lower() or 'traceback' in line.lower():
+                print(f"[STDERR] {line}", flush=True)
+
+    return _parse_lm_eval_results(''.join(stdout_lines))
 
 
 def run_hf_eval(model_name, tasks, bsz="auto", env=None):
     """Run lm_eval on a HuggingFace model."""
     import subprocess
     cmd = [
-        sys.executable, "-m", "lm_eval",
+        sys.executable, "-u", "-m", "lm_eval",
         "--model", "hf",
         "--model_args", f"pretrained={model_name},dtype=bfloat16,trust_remote_code=True",
         "--tasks", tasks,
@@ -185,13 +196,22 @@ def run_hf_eval(model_name, tasks, bsz="auto", env=None):
     print(f"\n[EVAL] Running HF model: {model_name}")
     print(f"[EVAL] Tasks: {tasks}")
     print(f"[EVAL] Command: {' '.join(cmd)}")
+    sys.stdout.flush()
 
     if env is None:
         env = {**os.environ}
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    print(result.stdout)
+    env["PYTHONUNBUFFERED"] = "1"
 
-    return _parse_lm_eval_results(result.stdout)
+    stdout_lines = []
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1, env=env)
+    for line in proc.stdout:
+        print(line, end='', flush=True)
+        stdout_lines.append(line)
+    stderr = proc.stderr.read()
+    proc.wait()
+
+    return _parse_lm_eval_results(''.join(stdout_lines))
 
 
 def _parse_lm_eval_results(stdout):
