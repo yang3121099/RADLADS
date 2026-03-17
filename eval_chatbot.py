@@ -164,20 +164,26 @@ def run_radlads_eval(path, tasks, bsz=1, env=None):
         env = {**os.environ}
     env["PYTHONUNBUFFERED"] = "1"
 
-    # Stream output in real-time (for log file progress) while capturing for parsing
+    # Stream both stdout and stderr in real-time to log file, capture stdout for parsing
+    import selectors
     stdout_lines = []
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, bufsize=1, env=env)
-    for line in proc.stdout:
-        print(line, end='', flush=True)
-        stdout_lines.append(line)
-    stderr = proc.stderr.read()
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+    sel.register(proc.stderr, selectors.EVENT_READ)
+    open_streams = 2
+    while open_streams > 0:
+        for key, _ in sel.select():
+            line = key.fileobj.readline()
+            if not line:
+                sel.unregister(key.fileobj)
+                open_streams -= 1
+                continue
+            if key.fileobj is proc.stdout:
+                stdout_lines.append(line)
+            print(line, end='', flush=True)
     proc.wait()
-
-    if stderr:
-        for line in stderr.split('\n'):
-            if 'error' in line.lower() or 'traceback' in line.lower():
-                print(f"[STDERR] {line}", flush=True)
 
     return _parse_lm_eval_results(''.join(stdout_lines))
 
@@ -202,13 +208,24 @@ def run_hf_eval(model_name, tasks, bsz="auto", env=None):
         env = {**os.environ}
     env["PYTHONUNBUFFERED"] = "1"
 
+    import selectors
     stdout_lines = []
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, bufsize=1, env=env)
-    for line in proc.stdout:
-        print(line, end='', flush=True)
-        stdout_lines.append(line)
-    stderr = proc.stderr.read()
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+    sel.register(proc.stderr, selectors.EVENT_READ)
+    open_streams = 2
+    while open_streams > 0:
+        for key, _ in sel.select():
+            line = key.fileobj.readline()
+            if not line:
+                sel.unregister(key.fileobj)
+                open_streams -= 1
+                continue
+            if key.fileobj is proc.stdout:
+                stdout_lines.append(line)
+            print(line, end='', flush=True)
     proc.wait()
 
     return _parse_lm_eval_results(''.join(stdout_lines))
@@ -318,6 +335,8 @@ def eval_checkpoint(path, bsz=4, force=False, gpu=None, group="all", tasks_overr
             if results:
                 _save_result_locked(ckpt_key, path, "custom", results)
                 print(f"[OK] custom benchmarks saved for {os.path.basename(path)}")
+            else:
+                print(f"[WARN] No results parsed for {os.path.basename(path)} — check log for details")
         except Exception as e:
             print(f"[ERROR] custom eval failed: {e}")
         return
@@ -340,6 +359,8 @@ def eval_checkpoint(path, bsz=4, force=False, gpu=None, group="all", tasks_overr
             if results:
                 _save_result_locked(ckpt_key, path, g, results)
                 print(f"[OK] {g} benchmarks saved for {os.path.basename(path)}")
+            else:
+                print(f"[WARN] No results parsed for {g} on {os.path.basename(path)} — check log for details")
         except Exception as e:
             print(f"[ERROR] {g} eval failed: {e}")
 
