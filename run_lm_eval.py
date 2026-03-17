@@ -165,6 +165,7 @@ class EvalHarnessAdapter(TemplateLM):
     
     @torch.no_grad()
     def greedy_generate(self, ctx, state=None):
+        """Single-sequence greedy generation with stateful/recurrent inference (fallback)."""
         STOP_TOKEN = [self.tokenizer.eos_token_id]
 
         all_tokens = []
@@ -192,21 +193,81 @@ class EvalHarnessAdapter(TemplateLM):
                 out_str += tmp
                 out_last = i + 1
         return out_str
-    
+
+    @torch.no_grad()
+    def batched_generate(self, contexts, gen_kwargs_list):
+        """Batched greedy generation for multiple contexts simultaneously.
+
+        Processes all contexts in a single batch per generation step, re-forwarding
+        the full sequence each step. Trades extra compute for much higher GPU utilization.
+        """
+        STOP_TOKEN = self.tokenizer.eos_token_id
+        B = len(contexts)
+        if B == 0:
+            return []
+
+        # Per-request max generation length (some tasks override via gen_kwargs)
+        per_seq_max = [gk.get('max_gen_toks', self.max_gen_toks) for gk in gen_kwargs_list]
+        max_new_tokens = max(per_seq_max)
+
+        # Encode all contexts upfront
+        input_ids_list = [self.tokenizer.encode(ctx) for ctx in contexts]
+
+        generated_tokens = [[] for _ in range(B)]
+        finished = [False] * B
+
+        for step in range(max_new_tokens):
+            if all(finished):
+                break
+
+            # Compute per-sequence lengths and max length for padding
+            seq_lengths = []
+            max_len = 0
+            for i in range(B):
+                slen = len(input_ids_list[i]) + len(generated_tokens[i])
+                seq_lengths.append(slen)
+                if slen > max_len:
+                    max_len = slen
+
+            max_len = (max_len + 7) // 8 * 8  # align to 8 for GPU efficiency
+
+            # Build right-padded batch tensor
+            batched = torch.zeros(B, max_len, dtype=torch.long, device=device)
+            for i in range(B):
+                seq = input_ids_list[i] + generated_tokens[i]
+                batched[i, :len(seq)] = torch.tensor(seq, dtype=torch.long, device=device)
+
+            # Forward pass
+            results = model.forward(batched, None)
+            if isinstance(results, tuple):
+                logits = results[0]
+            elif isinstance(results, torch.Tensor):
+                logits = results
+            else:
+                logits = results.logits
+
+            # Extract next token at each sequence's last real position
+            for i in range(B):
+                if finished[i]:
+                    continue
+                next_token = logits[i, seq_lengths[i] - 1].argmax().item()
+                if next_token == STOP_TOKEN or len(generated_tokens[i]) >= per_seq_max[i]:
+                    finished[i] = True
+                else:
+                    generated_tokens[i].append(next_token)
+
+        return [self.tokenizer.decode(gen) for gen in generated_tokens]
+
     @torch.no_grad()
     def generate_until(self, requests):
-        """
-        Generate until is lm_eval harness' way to say "do greedy generation" - necessary for some tasks.
-        the eval harness dispatches requests to the model, and the model does argmax generation, the results of which
-        are returned to the eval harness to evaluate.
+        """Batched greedy generation for lm_eval harness.
 
-        TODO: batched / data parallel generation
+        Processes requests in batches of size batch_size_per_gpu for higher GPU utilization.
+        Falls back to single-sequence stateful generation when batch size is 1.
 
-        :param requests: Dictionary of requests containing the context (prompt) and 'until' - a token or
-                         list of stop tokens.
+        :param requests: List of Instance objects containing (context, gen_kwargs) pairs.
         """
         res = []
-        # get only the args from each Instance object
         reqs = [req.args for req in requests]
 
         def _collate(x):
@@ -214,11 +275,27 @@ class EvalHarnessAdapter(TemplateLM):
             return (len(toks), x[0])
 
         reord = utils.Reorderer(reqs, _collate)
-        for context, gen_kwargs in tqdm(reord.get_reordered(), "Running greedy generation"):
-            out_str = self.greedy_generate(context)
-            for term in gen_kwargs['until']:
-                out_str = out_str.split(term)[0]
-            res.append(out_str)
+        ordered = reord.get_reordered()
+
+        B = self.batch_size_per_gpu
+        total_batches = (len(ordered) + B - 1) // B
+
+        for nb in tqdm(range(0, len(ordered), B), desc="Running batched generation", total=total_batches):
+            batch = ordered[nb:nb + B]
+            contexts = [ctx for ctx, _ in batch]
+            gen_kwargs_list = [gk for _, gk in batch]
+
+            if len(contexts) == 1:
+                # Single sequence: use efficient stateful generation
+                out_strs = [self.greedy_generate(contexts[0])]
+            else:
+                out_strs = self.batched_generate(contexts, gen_kwargs_list)
+
+            for out_str, gen_kwargs in zip(out_strs, gen_kwargs_list):
+                for term in gen_kwargs['until']:
+                    out_str = out_str.split(term)[0]
+                res.append(out_str)
+
         return reord.get_original(res)
 
     @property
