@@ -16,8 +16,8 @@
 set -uo pipefail
 
 # ─── Configuration ──────────────────────────────────────────────────────────
-NUM_GPUS=2
-JOBS_PER_GPU=3
+NUM_GPUS=${NUM_GPUS:-2}
+JOBS_PER_GPU=${JOBS_PER_GPU:-3}
 BSZ=${BSZ:-8}
 FORCE=0
 LOGDIR="eval_logs/chatbot"
