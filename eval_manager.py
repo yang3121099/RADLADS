@@ -486,15 +486,15 @@ def run_baseline_supergpqa_eval(model_name, bsz="auto", gpu=None):
     return results
 
 
-def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, workers_per_gpu=3):
+def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, workers_per_gpu=3, only=None):
     """Evaluate ALL checkpoint directories under base_dir using 2 GPUs in parallel.
 
-    Scans all out/*/ directories, collects all checkpoints, and distributes
-    tasks across GPUs with multiple workers.
+    Each checkpoint = 1 worker. Models are round-robin distributed across GPUs,
+    with up to workers_per_gpu concurrent models per GPU.
 
     Usage:
         python eval_manager.py eval_all_dirs
-        python eval_manager.py eval_all_dirs --base-dir out --bsz 4 --workers-per-gpu 3
+        python eval_manager.py eval_all_dirs --only standard --workers-per-gpu 3
     """
     import subprocess
     import threading
@@ -518,7 +518,7 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
     log = load_log()
 
     # Build task list: (checkpoint_path, eval_type, gpu_id)
-    # Round-robin GPU assignment per checkpoint, both eval types on same GPU
+    # Round-robin GPU assignment per checkpoint
     tasks = []
     gpu_cycle = [gpu0, gpu1]
     for i, ckpt in enumerate(all_ckpts):
@@ -528,13 +528,15 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
         entry = log.get(key, {})
         assigned_gpu = gpu_cycle[i % len(gpu_cycle)]
 
-        need_standard = force or not entry.get("standard_done", False)
-        need_supergpqa = force or not entry.get("supergpqa_done", False)
+        if only in (None, "standard"):
+            need_standard = force or not entry.get("standard_done", False)
+            if need_standard:
+                tasks.append((ckpt, "standard", assigned_gpu))
 
-        if need_standard:
-            tasks.append((ckpt, "standard", assigned_gpu))
-        if need_supergpqa:
-            tasks.append((ckpt, "supergpqa", assigned_gpu))
+        if only in (None, "supergpqa"):
+            need_supergpqa = force or not entry.get("supergpqa_done", False)
+            if need_supergpqa:
+                tasks.append((ckpt, "supergpqa", assigned_gpu))
 
     save_log(log)
 
@@ -546,7 +548,9 @@ def eval_all_dirs_parallel(base_dir="out", bsz=4, force=False, gpu0=0, gpu1=1, w
     total_tasks = len(tasks)
     total_ckpts = len(set(t[0] for t in tasks))
     total_workers = workers_per_gpu * 2
-    print(f"\n[INFO] {total_tasks} tasks for {total_ckpts} checkpoints across {len(dirs)} dirs")
+    eval_types = set(t[1] for t in tasks)
+    print(f"\n[INFO] {total_tasks} tasks for {total_ckpts} checkpoints")
+    print(f"[INFO] Eval types: {', '.join(sorted(eval_types))}")
     print(f"[INFO] {workers_per_gpu} workers/GPU, {total_workers} total concurrent processes, bsz={bsz}")
 
     # Use semaphores to limit concurrency per GPU
@@ -761,6 +765,8 @@ def main():
     p_dirs.add_argument("--gpu1", type=int, default=1)
     p_dirs.add_argument("--workers-per-gpu", type=int, default=3,
                        help="Number of concurrent eval processes per GPU (default: 3)")
+    p_dirs.add_argument("--only", choices=["standard", "supergpqa"], default=None,
+                       help="Only run standard or supergpqa (default: both)")
 
     p_base = sub.add_parser("eval_baseline", help="Evaluate HuggingFace baseline model")
     p_base.add_argument("--model", required=True, help="HF model name, e.g. Qwen/Qwen2.5-7B")
@@ -782,7 +788,7 @@ def main():
     elif args.command == "eval_all_parallel":
         eval_all_parallel(args.dir, args.bsz, args.force, args.gpu0, args.gpu1, args.workers_per_gpu)
     elif args.command == "eval_all_dirs":
-        eval_all_dirs_parallel(args.base_dir, args.bsz, args.force, args.gpu0, args.gpu1, args.workers_per_gpu)
+        eval_all_dirs_parallel(args.base_dir, args.bsz, args.force, args.gpu0, args.gpu1, args.workers_per_gpu, only=args.only)
     elif args.command == "eval_baseline":
         eval_baseline(args.model, args.bsz, args.force, gpu=args.gpu, only=args.only)
         generate_summary()
