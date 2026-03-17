@@ -18,11 +18,11 @@ set -uo pipefail
 # ─── Configuration ──────────────────────────────────────────────────────────
 NUM_GPUS=2
 JOBS_PER_GPU=3
-BSZ=${BSZ:-1}
+BSZ=${BSZ:-4}
 FORCE=${FORCE:-0}
 LOGDIR="eval_logs"
 ALL_TASKS="lambada_openai,arc_easy,arc_challenge,hellaswag,winogrande,piqa,openbookqa,boolq"
-COMMON_ARGS="-c configs/qwen7b.yaml -c configs/qwerky7.yaml --model.attention_type rwkv7_fla_chunk --model.ctx_len 4096 --precision bf16 --bsz $BSZ"
+COMMON_ARGS="-c configs/qwen7b.yaml -c configs/qwerky7.yaml --model.attention_type rwkv7_fla_fused_recurrent --model.ctx_len 4096 --precision bf16 --bsz $BSZ"
 
 # Parse args
 CKPT_ARGS=()
