@@ -11,7 +11,9 @@
 #   BSZ=4 bash auto_eval.sh                  # custom batch size
 # ============================================================================
 
-set -euo pipefail
+# NOTE: Do NOT use 'set -e' here. Bash arithmetic like ((x++)) returns 1
+# when x was 0, and 'set -e' treats that as a fatal error.
+set -uo pipefail
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 NUM_GPUS=2
@@ -72,11 +74,11 @@ echo ""
 for dir in "${CKPT_DIRS[@]}"; do
     if [ -d "$dir" ]; then
         count=$(ls "$dir"/rwkv-*.pth 2>/dev/null | wc -l)
-        echo "  📁 $dir: $count checkpoint(s)"
+        echo "  $dir: $count checkpoint(s)"
     fi
 done
 echo ""
-echo "═══════════════════════════════════════════════════════════════════════"
+echo "========================================================================="
 
 # ─── Skip already-evaluated checkpoints ─────────────────────────────────────
 EVAL_CKPTS=()
@@ -131,27 +133,46 @@ get_progress() {
     local logfile="$1"
     if [ ! -f "$logfile" ]; then
         echo "-1"
-        return
+        return 0
     fi
     # Read last 4KB of log to find progress bar output
     local tail_text
-    tail_text=$(tail -c 4096 "$logfile" 2>/dev/null || echo "")
+    tail_text=$(tail -c 4096 "$logfile" 2>/dev/null || true)
 
-    # Match progress bar: [████░░] 35% (120/340 batches)
+    # Match: 35% (120/340 batches) - use grep -o with extended regex
     local pct
-    pct=$(echo "$tail_text" | grep -oP '\d+(?=%\s+\(\d+/\d+ batches\))' | tail -1)
+    pct=$(echo "$tail_text" | grep -oE '[0-9]+% \([0-9]+/[0-9]+ batches\)' | tail -1 | grep -oE '^[0-9]+' || true)
     if [ -n "$pct" ]; then
         echo "$pct"
-        return
+        return 0
     fi
 
     # Check for setup phase
-    if echo "$tail_text" | grep -qE 'Loading model|RWKV_MODEL_TYPE|Overwriting default'; then
+    if echo "$tail_text" | grep -qE 'Loading model|RWKV_MODEL_TYPE|Overwriting default' 2>/dev/null; then
         echo "0"
-        return
+        return 0
     fi
 
     echo "-1"
+    return 0
+}
+
+# ─── Build progress bar string ──────────────────────────────────────────────
+make_bar() {
+    local pct=$1
+    local width=25
+    local filled=$((width * pct / 100))
+    local empty=$((width - filled))
+    local bar=""
+    local i
+
+    for ((i=0; i<filled; i++)); do
+        bar+="="
+    done
+    for ((i=0; i<empty; i++)); do
+        bar+="-"
+    done
+    echo "$bar"
 }
 
 # ─── Dashboard rendering ───────────────────────────────────────────────────
@@ -163,21 +184,24 @@ draw_dashboard() {
         printf '\033[%dA\033[J' "$DASHBOARD_LINES"
     fi
 
-    local lines=0
+    local lines=1  # Start at 1 to avoid ((0++)) == false issue
     local line
 
     # Header
-    line="───────────────────────────────────────────────────────────────────────"
-    echo "$line"; ((lines++))
+    echo "-------------------------------------------------------------------------"
+    lines=$((lines + 1))
 
     printf "  %-35s %-6s %s\n" "Model" "GPU" "Progress"
-    ((lines++))
+    lines=$((lines + 1))
 
-    line="───────────────────────────────────────────────────────────────────────"
-    echo "$line"; ((lines++))
+    echo "-------------------------------------------------------------------------"
+    lines=$((lines + 1))
 
-    # Running jobs
-    for key in $(echo "${!JOB_STATUS[@]}" | tr ' ' '\n' | sort); do
+    # All jobs sorted by key
+    local sorted_keys
+    sorted_keys=$(echo "${!JOB_STATUS[@]}" | tr ' ' '\n' | sort)
+
+    for key in $sorted_keys; do
         local status="${JOB_STATUS[$key]}"
         local gpu="${JOB_GPUS[$key]}"
         local label="${JOB_LABELS[$key]}"
@@ -191,31 +215,21 @@ draw_dashboard() {
         if [ "$status" = "running" ]; then
             local pct
             pct=$(get_progress "$logfile")
-            local bar=""
-            local pct_str=""
 
-            if [ "$pct" -lt 0 ] 2>/dev/null; then
-                bar=$(printf '·%.0s' {1..25})
-                pct_str="..."
+            if [ -z "$pct" ] || [ "$pct" = "-1" ]; then
+                printf "  %-35s GPU%-3s > [...........................] ...\n" "$label" "$gpu"
             else
-                local filled=$((25 * pct / 100))
-                local empty=$((25 - filled))
-                bar=$(printf '█%.0s' $(seq 1 $filled 2>/dev/null) || true)
-                bar+=$(printf '░%.0s' $(seq 1 $empty 2>/dev/null) || true)
-                # Handle edge case when filled=0 or empty=0
-                [ $filled -eq 0 ] && bar=$(printf '░%.0s' {1..25})
-                [ $empty -eq 0 ] && bar=$(printf '█%.0s' {1..25})
-                pct_str="${pct}%"
+                local bar
+                bar=$(make_bar "$pct")
+                printf "  %-35s GPU%-3s > [%s] %3d%%\n" "$label" "$gpu" "$bar" "$pct"
             fi
-
-            printf "  %-35s GPU%-3s ▶ [%s] %s\n" "$label" "$gpu" "$bar" "$pct_str"
-            ((lines++))
+            lines=$((lines + 1))
         elif [ "$status" = "done" ]; then
-            printf "  %-35s GPU%-3s ✓ done\n" "$label" "$gpu"
-            ((lines++))
+            printf "  %-35s GPU%-3s   [=========================] done\n" "$label" "$gpu"
+            lines=$((lines + 1))
         elif [ "$status" = "fail" ]; then
-            printf "  %-35s GPU%-3s ✗ FAILED\n" "$label" "$gpu"
-            ((lines++))
+            printf "  %-35s GPU%-3s   FAILED\n" "$label" "$gpu"
+            lines=$((lines + 1))
         fi
     done
 
@@ -223,19 +237,29 @@ draw_dashboard() {
     local queued=$((TOTAL - LAUNCHED))
     if [ $queued -gt 0 ]; then
         printf "  ... %d more queued\n" "$queued"
-        ((lines++))
+        lines=$((lines + 1))
     fi
 
     # Summary line
-    line="───────────────────────────────────────────────────────────────────────"
-    echo "$line"; ((lines++))
+    echo "-------------------------------------------------------------------------"
+    lines=$((lines + 1))
 
     local running=$((LAUNCHED - COMPLETED - FAILED))
     local fail_str=""
-    [ $FAILED -gt 0 ] && fail_str=" ($FAILED failed)"
-    printf "  Total: %d/%d done%s, %d running, %d queued\n" \
-        "$((COMPLETED + FAILED))" "$TOTAL" "$fail_str" "$running" "$queued"
-    ((lines++))
+    if [ $FAILED -gt 0 ]; then
+        fail_str=" ($FAILED failed)"
+    fi
+
+    local now
+    now=$(date +%s)
+    local elapsed=$((now - START_TIME))
+    local elapsed_min=$((elapsed / 60))
+    local elapsed_sec=$((elapsed % 60))
+
+    printf "  Done: %d/%d%s | Running: %d | Queued: %d | Time: %dm%02ds\n" \
+        "$((COMPLETED + FAILED))" "$TOTAL" "$fail_str" "$running" "$queued" \
+        "$elapsed_min" "$elapsed_sec"
+    lines=$((lines + 1))
 
     DASHBOARD_LINES=$lines
 }
@@ -255,13 +279,11 @@ launch_job() {
     local best_gpu=0
     local min_jobs=${GPU_RUNNING[0]}
     for ((g=1; g<NUM_GPUS; g++)); do
-        if [ ${GPU_RUNNING[$g]} -lt $min_jobs ]; then
+        if [ "${GPU_RUNNING[$g]}" -lt "$min_jobs" ]; then
             min_jobs=${GPU_RUNNING[$g]}
             best_gpu=$g
         fi
     done
-
-    mkdir -p "$LOGDIR"
 
     # Launch eval subprocess
     CUDA_VISIBLE_DEVICES=$best_gpu python run_lm_eval.py $COMMON_ARGS \
@@ -285,9 +307,9 @@ check_finished() {
         if [ "${JOB_STATUS[$key]}" = "running" ]; then
             local pid=${JOB_PIDS[$key]}
             if ! kill -0 "$pid" 2>/dev/null; then
-                # Process finished
-                wait "$pid" 2>/dev/null
-                local rc=$?
+                # Process finished — get exit code
+                local rc=0
+                wait "$pid" 2>/dev/null || rc=$?
                 local gpu=${JOB_GPUS[$key]}
                 GPU_RUNNING[$gpu]=$((GPU_RUNNING[$gpu] - 1))
 
@@ -309,31 +331,51 @@ fill_slots() {
         # Find a GPU with available slots
         local launched_any=0
         for ((g=0; g<NUM_GPUS; g++)); do
-            if [ ${GPU_RUNNING[$g]} -lt $JOBS_PER_GPU ] && [ $NEXT_IDX -lt $TOTAL ]; then
+            if [ "${GPU_RUNNING[$g]}" -lt $JOBS_PER_GPU ] && [ $NEXT_IDX -lt $TOTAL ]; then
                 launch_job $NEXT_IDX
                 NEXT_IDX=$((NEXT_IDX + 1))
                 launched_any=1
             fi
         done
         # If no slots available, break
-        [ $launched_any -eq 0 ] && break
+        if [ $launched_any -eq 0 ]; then
+            break
+        fi
     done
 }
 
+# ─── Cleanup on Ctrl+C ─────────────────────────────────────────────────────
+cleanup() {
+    echo ""
+    echo ""
+    echo "[INTERRUPTED] Killing all running eval processes..."
+    for key in "${!JOB_PIDS[@]}"; do
+        if [ "${JOB_STATUS[$key]}" = "running" ]; then
+            kill "${JOB_PIDS[$key]}" 2>/dev/null || true
+        fi
+    done
+    echo "Background processes killed. Logs so far saved to $LOGDIR/"
+    exit 130
+}
+trap cleanup INT TERM
+
 # ─── Main loop ──────────────────────────────────────────────────────────────
 START_TIME=$(date +%s)
+
+echo "Launching evaluations..."
+echo ""
 
 # Initial fill
 fill_slots
 
 while [ $((COMPLETED + FAILED)) -lt $TOTAL ]; do
+    sleep 3
     check_finished
     fill_slots
     draw_dashboard
-    sleep 2
 done
 
-# Final check & dashboard
+# Final dashboard
 check_finished
 draw_dashboard
 
@@ -344,20 +386,22 @@ ELAPSED_MIN=$((ELAPSED / 60))
 ELAPSED_SEC=$((ELAPSED % 60))
 
 echo ""
-echo "╔══════════════════════════════════════════════════════════════════════╗"
-echo "║                        EVALUATION COMPLETE                         ║"
-echo "╚══════════════════════════════════════════════════════════════════════╝"
+echo "========================================================================="
+echo "                        EVALUATION COMPLETE                              "
+echo "========================================================================="
 echo ""
 echo "  Total time:    ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
 echo "  Completed:     $COMPLETED / $TOTAL"
-[ $FAILED -gt 0 ] && echo "  Failed:        $FAILED"
+if [ $FAILED -gt 0 ]; then
+    echo "  Failed:        $FAILED"
+fi
 echo "  Logs:          $LOGDIR/"
 echo ""
 
 # ─── Print results table ───────────────────────────────────────────────────
-echo "═══════════════════════════════════════════════════════════════════════"
+echo "========================================================================="
 printf "  %-40s %s\n" "Model" "Results"
-echo "───────────────────────────────────────────────────────────────────────"
+echo "-------------------------------------------------------------------------"
 
 for ckpt in "${EVAL_CKPTS[@]}"; do
     dirbase=$(basename "$(dirname "$ckpt")")
@@ -366,20 +410,20 @@ for ckpt in "${EVAL_CKPTS[@]}"; do
     key="${dirbase}/${name}"
 
     echo ""
-    echo "  ── $key ──"
+    echo "  -- $key --"
 
     if [ -f "$logfile" ]; then
-        # Extract result lines (lm_eval table format)
-        grep -E '^\|.*\|.*\|.*acc' "$logfile" 2>/dev/null | while read -r line; do
+        # Extract the final results dict (Python dict printed by run_lm_eval.py)
+        # Try table format first
+        grep -E '^\|.*\|.*\|.*acc' "$logfile" 2>/dev/null | while IFS= read -r line; do
             echo "    $line"
-        done
+        done || true
 
-        # Also try to get the final dict output
+        # If no table, try dict output
         if ! grep -qE '^\|.*\|.*\|.*acc' "$logfile" 2>/dev/null; then
-            # Try OrderedDict format
-            grep -oP "OrderedDict\(.*\)" "$logfile" 2>/dev/null | tail -1 | head -c 200 || true
-            # Or raw dict
-            grep -E "^\{'" "$logfile" 2>/dev/null | tail -1 | head -c 200 || true
+            tail -5 "$logfile" 2>/dev/null | while IFS= read -r line; do
+                echo "    $line"
+            done || true
         fi
     else
         echo "    [no log file]"
@@ -387,7 +431,7 @@ for ckpt in "${EVAL_CKPTS[@]}"; do
 done
 
 echo ""
-echo "═══════════════════════════════════════════════════════════════════════"
+echo "========================================================================="
 
 # Also run eval_manager summary if available
 if [ -f "eval_manager.py" ]; then
