@@ -495,7 +495,7 @@ def main():
     p_eval.add_argument("--bsz", type=int, default=4)
     p_eval.add_argument("--force", action="store_true")
     p_eval.add_argument("--gpu", type=int, default=None)
-    p_eval.add_argument("--group", choices=["all", "fast", "base_retain", "chatbot", "advanced", "generative"], default="all",
+    p_eval.add_argument("--group", choices=list(TASK_GROUPS.keys()), default="all",
                         help="Which task group to evaluate (default: all)")
 
     p_all = sub.add_parser("eval_all", help="Evaluate all checkpoints in directory")
@@ -503,14 +503,14 @@ def main():
     p_all.add_argument("--bsz", type=int, default=4)
     p_all.add_argument("--force", action="store_true")
     p_all.add_argument("--gpu", type=int, default=None)
-    p_all.add_argument("--group", choices=["all", "fast", "base_retain", "chatbot", "advanced", "generative"], default="all")
+    p_all.add_argument("--group", choices=list(TASK_GROUPS.keys()), default="all")
 
     p_base = sub.add_parser("eval_baseline", help="Evaluate HuggingFace baseline model")
     p_base.add_argument("--model", required=True)
     p_base.add_argument("--bsz", default="auto")
     p_base.add_argument("--force", action="store_true")
     p_base.add_argument("--gpu", type=int, default=None)
-    p_base.add_argument("--group", choices=["all", "fast", "base_retain", "chatbot", "advanced", "generative"], default="all")
+    p_base.add_argument("--group", choices=list(TASK_GROUPS.keys()), default="all")
 
     p_sum = sub.add_parser("summary", help="Generate markdown summary")
     p_sum.add_argument("--log", default=None)

@@ -369,7 +369,7 @@ if [ $FAILED_COUNT -gt 0 ]; then
     echo "  Failed model logs:"
     for key in "${!JOB_STATUS[@]}"; do
         if [ "${JOB_STATUS[$key]}" = "fail" ]; then
-            echo "    - $LOGDIR/$(echo "$key" | tr '/' '_').log"
+            echo "    - ${JOB_LOGS[$key]}"
         fi
     done
 fi
