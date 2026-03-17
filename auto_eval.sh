@@ -42,9 +42,13 @@ else
 fi
 
 ALL_CKPTS=()
-for dir in "${CKPT_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        for ckpt in "$dir"/rwkv-*.pth; do
+for arg in "${CKPT_DIRS[@]}"; do
+    if [ -f "$arg" ] && [[ "$arg" == *.pth ]]; then
+        # Direct .pth file path
+        ALL_CKPTS+=("$arg")
+    elif [ -d "$arg" ]; then
+        # Directory: find all rwkv-*.pth inside
+        for ckpt in "$arg"/rwkv-*.pth; do
             [ -f "$ckpt" ] && ALL_CKPTS+=("$ckpt")
         done
     fi
