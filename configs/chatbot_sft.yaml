@@ -7,19 +7,19 @@ train:
   load_partial: 0
 
   data_type: "binidx"
-  data_file: "data/SlimOrca"    # 会被 run 脚本覆盖
-  my_exit_tokens: 200000000     # 200M tokens
-  magic_prime: 1                # 会被 run 脚本覆盖
+  data_file: "data/ultrachat_200k"  # 被 run 脚本覆盖
+  my_exit_tokens: 200000000         # 200M tokens
+  magic_prime: 1                    # 被 run 脚本覆盖
 
   optimizer: dsfusedadamw
   lr_decay_type: cos
-  lr_init: 5e-6
-  lr_final: 1e-6
-  warmup_steps: 50
+  lr_init: 2e-6
+  lr_final: 5e-7
+  warmup_steps: 100
   beta1: 0.9
   beta2: 0.95
   adam_eps: 1e-8
-  weight_decay: 0
+  weight_decay: 0.01
 
   devices: 2
   num_nodes: 1

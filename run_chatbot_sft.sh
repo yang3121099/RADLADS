@@ -2,27 +2,23 @@
 # ============================================================================
 # RADLADS Chatbot SFT 训练 + 测评 一体脚本
 #
-# 从 step2-ckpt1 (BOA) 继续训练 chatbot SFT 数据
-# 双卡训练, 200M tokens, 每 20M 保存一次 checkpoint
-# 训练完成后自动测评所有 checkpoint
+# 从 BOA 基座继续训练 chatbot SFT 数据
+# 双卡训练, 最多 200M tokens, 每 20M 保存一次 checkpoint
 #
 # 推荐数据集:
-#   1. SlimOrca        - 518k 高质量 GPT-4 指令 (推荐首选)
-#   2. ultrachat_200k  - 200k 多轮对话
-#   3. OpenHermes-2.5  - 1M 多源混合指令
-#   4. WizardLM_evol_instruct_70k - 70k 进化指令
-#   5. CodeFeedback    - 157k 代码指令
+#   1. ultrachat_200k   - 200k 多轮对话 (推荐首选, 保持基座能力最佳)
+#   2. SlimOrca          - 518k 高质量 GPT-4 指令
+#   3. OpenHermes-2.5    - 1M 多源混合指令
 #
 # 用法:
-#   bash run_chatbot_sft.sh setup                    # 下载 ckpt + 准备所有数据
+#   bash run_chatbot_sft.sh setup                    # 下载 ckpt + 准备数据
 #   bash run_chatbot_sft.sh prepare_data             # 仅准备数据
+#   bash run_chatbot_sft.sh train_ultrachat          # 用 UltraChat 训练 (推荐)
 #   bash run_chatbot_sft.sh train_slimorca           # 用 SlimOrca 训练
-#   bash run_chatbot_sft.sh train_ultrachat          # 用 UltraChat 训练
 #   bash run_chatbot_sft.sh train_openhermes         # 用 OpenHermes 训练
-#   bash run_chatbot_sft.sh train_all                # 依次用所有数据集训练
-#   bash run_chatbot_sft.sh eval_all                 # 测评所有已训练的 checkpoint
-#   bash run_chatbot_sft.sh eval_baseline            # 测评 Qwen2.5-7B-Instruct baseline
-#   bash run_chatbot_sft.sh full                     # 完整流程: setup + train_all + eval_all
+#   bash run_chatbot_sft.sh eval_all                 # 测评所有 checkpoint (chatbot指标)
+#   bash run_chatbot_sft.sh eval_baseline            # 测评 Qwen baselines
+#   bash run_chatbot_sft.sh full                     # 完整流程
 # ============================================================================
 set -e
 
@@ -35,8 +31,8 @@ TOKENIZER="Qwen/Qwen2.5-7B-Instruct"
 CTX_LEN=4096
 MAX_TOKENS=200000000  # 200M
 
-EVAL_BSZ=1
-EVAL_GPU=0  # 测评用的 GPU
+EVAL_BSZ=4
+EVAL_GPU=0
 
 # === Step 0: 下载 checkpoint ===
 download_ckpt() {
@@ -70,8 +66,8 @@ prepare_one_dataset() {
 }
 
 prepare_data() {
-    prepare_one_dataset "Open-Orca/SlimOrca" "SlimOrca"
     prepare_one_dataset "HuggingFaceH4/ultrachat_200k" "ultrachat_200k"
+    prepare_one_dataset "Open-Orca/SlimOrca" "SlimOrca"
     prepare_one_dataset "teknium/OpenHermes-2.5" "OpenHermes-2.5"
 }
 
@@ -111,12 +107,12 @@ train_with_dataset() {
         --train.my_exit_tokens ${MAX_TOKENS}
 }
 
-train_slimorca() {
-    train_with_dataset "SlimOrca" "auto" "slimorca"
-}
-
 train_ultrachat() {
     train_with_dataset "ultrachat_200k" "auto" "ultrachat"
+}
+
+train_slimorca() {
+    train_with_dataset "SlimOrca" "auto" "slimorca"
 }
 
 train_openhermes() {
@@ -124,8 +120,8 @@ train_openhermes() {
 }
 
 train_all() {
-    train_slimorca
     train_ultrachat
+    train_slimorca
     train_openhermes
 }
 
@@ -145,10 +141,17 @@ eval_all_ckpts() {
     echo " Evaluating all chatbot SFT checkpoints"
     echo "=========================================="
 
-    # 先评测 baseline (如果还没评过)
+    # 评测 baselines
     echo "[EVAL] Evaluating baselines..."
     python eval_chatbot.py eval_baseline --model Qwen/Qwen2.5-7B --gpu ${EVAL_GPU} --bsz ${EVAL_BSZ}
     python eval_chatbot.py eval_baseline --model Qwen/Qwen2.5-7B-Instruct --gpu ${EVAL_GPU} --bsz ${EVAL_BSZ}
+
+    # 评测 BOA 基座
+    if [ -f "${CKPT_PATH}" ]; then
+        echo ""
+        echo "[EVAL] Evaluating base checkpoint: ${CKPT_PATH}"
+        python eval_chatbot.py eval --path "${CKPT_PATH}" --bsz ${EVAL_BSZ} --gpu ${EVAL_GPU}
+    fi
 
     # 评测所有数据集的 checkpoint
     for dir in out/L28-D3584-qwerky7_qwen2-6_chatbot_*; do
@@ -158,13 +161,6 @@ eval_all_ckpts() {
             python eval_chatbot.py eval_all --dir "${dir}" --bsz ${EVAL_BSZ} --gpu ${EVAL_GPU}
         fi
     done
-
-    # 也评测 step2-ckpt1 本身
-    if [ -f "${CKPT_PATH}" ]; then
-        echo ""
-        echo "[EVAL] Evaluating base checkpoint: ${CKPT_PATH}"
-        python eval_chatbot.py eval --path "${CKPT_PATH}" --bsz ${EVAL_BSZ} --gpu ${EVAL_GPU}
-    fi
 
     python eval_chatbot.py summary
 }
@@ -182,7 +178,7 @@ summary() {
 full() {
     download_ckpt
     prepare_data
-    train_all
+    train_ultrachat
     eval_all_ckpts
 }
 
@@ -191,11 +187,11 @@ case "${1:-help}" in
     setup)              download_ckpt && prepare_data ;;
     download)           download_ckpt ;;
     prepare_data)       prepare_data ;;
-    train_slimorca)     train_slimorca ;;
     train_ultrachat)    train_ultrachat ;;
+    train_slimorca)     train_slimorca ;;
     train_openhermes)   train_openhermes ;;
     train_all)          train_all ;;
-    eval)               eval_single "${2}" ;;
+    eval)               eval_single "${2:-}" ;;
     eval_all)           eval_all_ckpts ;;
     eval_baseline)      eval_baseline ;;
     summary)            summary ;;
@@ -210,21 +206,21 @@ case "${1:-help}" in
         echo "Setup:"
         echo "  setup              - 下载 checkpoint + 准备所有数据"
         echo "  download           - 仅下载 checkpoint"
-        echo "  prepare_data       - 准备 SFT 数据 (SlimOrca + UltraChat + OpenHermes)"
+        echo "  prepare_data       - 准备 SFT 数据"
         echo ""
-        echo "Training:"
-        echo "  train_slimorca     - 用 SlimOrca 训练 (推荐首选)"
-        echo "  train_ultrachat    - 用 UltraChat-200k 训练"
+        echo "Training (推荐 ultrachat, 基座能力保持最好):"
+        echo "  train_ultrachat    - 用 UltraChat-200k 训练 (推荐)"
+        echo "  train_slimorca     - 用 SlimOrca 训练"
         echo "  train_openhermes   - 用 OpenHermes-2.5 训练"
         echo "  train_all          - 依次用所有数据集训练"
         echo ""
-        echo "Evaluation:"
+        echo "Evaluation (chatbot 专用指标):"
         echo "  eval <path>        - 测评单个 checkpoint"
-        echo "  eval_all           - 测评所有 chatbot SFT checkpoint + baselines"
-        echo "  eval_baseline      - 仅测评 Qwen2.5-7B / 7B-Instruct baselines"
+        echo "  eval_all           - 测评所有 checkpoint + baselines"
+        echo "  eval_baseline      - 仅测评 Qwen baselines"
         echo "  summary            - 输出汇总 markdown 表格"
         echo ""
         echo "Full Pipeline:"
-        echo "  full               - 完整流程: setup + train_all + eval_all"
+        echo "  full               - setup + train_ultrachat + eval_all"
         ;;
 esac
