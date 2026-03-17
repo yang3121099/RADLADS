@@ -57,12 +57,13 @@ if [ $MISSING -gt 0 ]; then
 fi
 
 # Determine groups to run
+# NOTE: Do NOT use $GROUPS — it is a reserved bash readonly array variable.
 if [ "$MODE" = "all" ]; then
-    GROUPS="all"
+    EVAL_GROUP="all"
 elif [ "$MODE" = "fast" ]; then
-    GROUPS="fast"
+    EVAL_GROUP="fast"
 elif [ "$MODE" = "generative" ]; then
-    GROUPS="generative"
+    EVAL_GROUP="generative"
 else
     echo "[ERROR] Unknown mode: $MODE (use: all, fast, generative)"
     exit 1
@@ -83,7 +84,7 @@ for model in "${MODELS[@]}"; do
     echo "========================================================================="
     echo "  [$DONE/$TOTAL] $short"
     echo "  Path: $model"
-    echo "  Group: $GROUPS"
+    echo "  Group: $EVAL_GROUP"
     echo "========================================================================="
     echo ""
 
@@ -91,7 +92,7 @@ for model in "${MODELS[@]}"; do
         --path "$model" \
         --bsz $BSZ \
         --gpu $GPU \
-        --group "$GROUPS" \
+        --group "$EVAL_GROUP" \
     || {
         echo "[FAILED] $short"
         FAILED=$((FAILED + 1))
