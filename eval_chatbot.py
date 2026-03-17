@@ -301,7 +301,7 @@ def _save_result_locked(ckpt_key, path, group, results):
         fcntl.flock(lock_f, fcntl.LOCK_UN)
 
 
-def eval_checkpoint(path, bsz=4, force=False, gpu=None, group="all"):
+def eval_checkpoint(path, bsz=4, force=False, gpu=None, group="all", tasks_override=None):
     """Evaluate a single RADLADS checkpoint."""
     log = load_log()
     ckpt_key = get_ckpt_key(path)
@@ -309,6 +309,18 @@ def eval_checkpoint(path, bsz=4, force=False, gpu=None, group="all"):
     env = {**os.environ}
     if gpu is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+
+    if tasks_override:
+        # Direct task specification — run as a custom group, save under "custom"
+        print(f"[EVAL] Custom tasks: {tasks_override}")
+        try:
+            results = run_radlads_eval(path, tasks_override, bsz, env=env)
+            if results:
+                _save_result_locked(ckpt_key, path, "custom", results)
+                print(f"[OK] custom benchmarks saved for {os.path.basename(path)}")
+        except Exception as e:
+            print(f"[ERROR] custom eval failed: {e}")
+        return
 
     groups_to_run = []
     if group == "all":
@@ -517,6 +529,8 @@ def main():
     p_eval.add_argument("--gpu", type=int, default=None)
     p_eval.add_argument("--group", choices=list(TASK_GROUPS.keys()), default="all",
                         help="Which task group to evaluate (default: all)")
+    p_eval.add_argument("--tasks", type=str, default=None,
+                        help="Override: comma-separated task names (bypasses --group)")
 
     p_all = sub.add_parser("eval_all", help="Evaluate all checkpoints in directory")
     p_all.add_argument("--dir", required=True)
@@ -538,7 +552,8 @@ def main():
     args = parser.parse_args()
 
     if args.command == "eval":
-        eval_checkpoint(args.path, args.bsz, args.force, gpu=args.gpu, group=args.group)
+        eval_checkpoint(args.path, args.bsz, args.force, gpu=args.gpu, group=args.group,
+                        tasks_override=args.tasks)
         generate_summary()
     elif args.command == "eval_all":
         eval_all(args.dir, args.bsz, args.force, gpu=args.gpu, group=args.group)

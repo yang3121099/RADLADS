@@ -24,13 +24,15 @@ LOGDIR="eval_logs/chatbot"
 
 # NOTE: Do NOT use $GROUPS — it is a reserved bash readonly array variable.
 EVAL_GROUP="all"
+CUSTOM_TASKS=""
 
 # Parse args
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE=1 ;;
+        --tasks=*) CUSTOM_TASKS="${arg#--tasks=}" ;;
         all|fast|generative|base_retain|chatbot|advanced|new) EVAL_GROUP="$arg" ;;
-        *) echo "[ERROR] Unknown argument: $arg (use: all, fast, generative, base_retain, chatbot, advanced, new, --force)"; exit 1 ;;
+        *) echo "[ERROR] Unknown argument: $arg (use: all, fast, generative, base_retain, chatbot, advanced, new, --force, --tasks=task1,task2)"; exit 1 ;;
     esac
 done
 
@@ -48,7 +50,11 @@ echo "╔═══════════════════════�
 echo "║          RADLADS 6-Model Parallel Benchmark Evaluation            ║"
 echo "╚══════════════════════════════════════════════════════════════════════╝"
 echo ""
-echo "  Mode:          $EVAL_GROUP"
+if [ -n "$CUSTOM_TASKS" ]; then
+    echo "  Mode:          custom (--tasks=$CUSTOM_TASKS)"
+else
+    echo "  Mode:          $EVAL_GROUP"
+fi
 echo "  GPUs:          $NUM_GPUS (GPU 0, GPU 1)"
 echo "  Jobs per GPU:  $JOBS_PER_GPU"
 echo "  Max parallel:  $((NUM_GPUS * JOBS_PER_GPU))"
@@ -257,11 +263,17 @@ launch_job() {
         force_flag="--force"
     fi
 
+    local tasks_flag=""
+    if [ -n "$CUSTOM_TASKS" ]; then
+        tasks_flag="--tasks $CUSTOM_TASKS"
+    fi
+
     CUDA_VISIBLE_DEVICES=$best_gpu python eval_chatbot.py eval \
         --path "$model" \
         --bsz $BSZ \
         --group "$EVAL_GROUP" \
         $force_flag \
+        $tasks_flag \
         > "$logfile" 2>&1 &
 
     local pid=$!
