@@ -5,10 +5,9 @@
 # 先跑 6 个 chatbot SFT 模型，支持后续全量模型。
 # 2 GPUs × JOBS_PER_GPU 并行，自动跳过已完成。
 #
-# 任务分组:
-#   chatbot_core  : social_iqa, ethics_utilitarianism, ethics_justice,
-#                   toxigen, crows_pairs_english
-#   chatbot_extra : commonsense_qa, sciq, logiqa, anli_r3
+# 任务分组 (全部使用标准parquet数据集, 无需custom code):
+#   chatbot_core  : openbookqa, arc_easy (常识/知识推理)
+#   chatbot_extra : anli_r1, anli_r2, anli_r3 (对抗式NLI)
 #   chatbot_deep  : chatbot_core + chatbot_extra (全部)
 #
 # Usage:

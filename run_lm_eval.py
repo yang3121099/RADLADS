@@ -5,28 +5,6 @@
 # pip install rwkv lm_eval --upgrade
 #
 import os, sys, types, json, math, time
-
-# datasets>=3.0 completely removed loading-script support, breaking many
-# lm-eval benchmarks (social_iqa, commonsense_qa, sciq, logiqa, etc.).
-# Downgrade to datasets<3 before anything imports it.
-import subprocess as _sp
-try:
-    _ds_ver = _sp.run(
-        [sys.executable, "-c",
-         "import datasets; print(datasets.__version__)"],
-        capture_output=True, text=True
-    )
-    if _ds_ver.returncode == 0:
-        _major = int(_ds_ver.stdout.strip().split('.')[0])
-        if _major >= 3:
-            print("[INFO] datasets>=3.0 detected — downgrading to <3 for lm-eval compatibility...")
-            _sp.check_call(
-                [sys.executable, "-m", "pip", "install", "-q", "datasets>=2.18,<3"],
-            )
-except Exception:
-    pass
-del _sp
-
 import numpy as np
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 
