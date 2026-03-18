@@ -23,6 +23,19 @@ Chatbot 模型测评脚本 — 全量 benchmark 评测
    - ifeval            : 指令遵循 (541题, 规则评分, 最重要的 chatbot 指标)
    - bbh_zeroshot      : Big-Bench Hard (23子任务, 生成+精确匹配)
 
+5. Chatbot 核心深度指标 (chatbot_core) — 社交/情商/安全 [loglikelihood, 快]:
+   - socialiqa              : 社交情境常识推理 (~2k题, 情绪/意图判断)
+   - ethics_utilitarianism  : 道德判断-功利主义 (~484题)
+   - ethics_justice          : 道德判断-公正性 (~684题)
+   - toxigen                 : 毒性检测 (~6.5k题)
+   - crows_pairs_english     : 社会偏见检测 (~1.5k题)
+
+6. Chatbot 扩展指标 (chatbot_extra) — 知识/推理/理解 [loglikelihood, 快]:
+   - commonsense_qa  : 常识推理 5选1 (~1.2k题)
+   - sciq            : 科学知识问答 4选1 (~1k题)
+   - logiqa2         : 逻辑推理 4选1 (~1.6k题)
+   - anli_r3         : 对抗式自然语言推理 (~1k题)
+
 注: generative 组因 RWKV adapter 的 generate_until 为逐条生成，速度较慢。
     建议先跑 fast 组 (base_retain+chatbot+advanced)，再跑 generative 组。
 
@@ -30,6 +43,8 @@ Chatbot 模型测评脚本 — 全量 benchmark 评测
     python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth
     python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth --group fast
     python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth --group generative
+    python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth --group chatbot_core
+    python eval_chatbot.py eval --path out/.../rwkv-step150-20M.pth --group chatbot_extra
     python eval_chatbot.py eval_all --dir out/L28-D3584-qwerky7_qwen2-6_chatbot_ultrachat
     python eval_chatbot.py eval_baseline --model Qwen/Qwen2.5-7B-Instruct
     python eval_chatbot.py summary
@@ -58,6 +73,12 @@ TASK_GROUPS = {
     "new": "truthfulqa_mc2,mmlu,boolq,mmlu_pro,gpqa_diamond_zeroshot",
     # 生成式评测 (generate_until, 慢)
     "generative": "gsm8k,ifeval,bbh_zeroshot",
+    # Chatbot 核心深度 — 社交/情商/安全 (loglikelihood, 快)
+    "chatbot_core": "socialiqa,ethics_utilitarianism,ethics_justice,toxigen,crows_pairs_english",
+    # Chatbot 扩展 — 知识/推理/理解 (loglikelihood, 快)
+    "chatbot_extra": "commonsense_qa,sciq,logiqa2,anli_r3",
+    # chatbot_core + chatbot_extra 合并
+    "chatbot_deep": "socialiqa,ethics_utilitarianism,ethics_justice,toxigen,crows_pairs_english,commonsense_qa,sciq,logiqa2,anli_r3",
     # 快速全量 = base_retain + chatbot + advanced (全部 loglikelihood)
     "fast": "lambada_openai,hellaswag,winogrande,piqa,truthfulqa_mc2,arc_challenge,mmlu,boolq,mmlu_pro,gpqa_diamond_zeroshot",
     # 全量
@@ -88,6 +109,17 @@ COL_SHORT = {
     "gsm8k": "gsm8k",
     "ifeval": "ifeval",
     "bbh_zeroshot": "bbh",
+    # chatbot_core (社交/安全)
+    "socialiqa": "siq",
+    "ethics_utilitarianism": "eth_u",
+    "ethics_justice": "eth_j",
+    "toxigen": "toxig",
+    "crows_pairs_english": "crows",
+    # chatbot_extra (知识/推理)
+    "commonsense_qa": "csqa",
+    "sciq": "sciq",
+    "logiqa2": "logiq",
+    "anli_r3": "anli3",
 }
 
 # Display order — grouped by category
@@ -98,6 +130,10 @@ TASK_ORDER = [
     "truthfulqa_mc2", "arc_challenge", "mmlu", "boolq",
     # advanced (loglikelihood)
     "mmlu_pro", "gpqa_diamond_zeroshot",
+    # chatbot_core — 社交/情商/安全 (loglikelihood)
+    "socialiqa", "ethics_utilitarianism", "ethics_justice", "toxigen", "crows_pairs_english",
+    # chatbot_extra — 知识/推理/理解 (loglikelihood)
+    "commonsense_qa", "sciq", "logiqa2", "anli_r3",
     # generative (generate_until)
     "gsm8k", "ifeval", "bbh_zeroshot",
 ]
@@ -129,6 +165,9 @@ def is_eval_complete(log, ckpt_key, group="all"):
     if group == "fast":
         return all(entry.get(f"{g}_done", False)
                    for g in ["base_retain", "chatbot", "advanced"])
+    if group == "chatbot_deep":
+        return all(entry.get(f"{g}_done", False)
+                   for g in ["chatbot_core", "chatbot_extra"])
     return entry.get(f"{group}_done", False)
 
 
@@ -343,13 +382,13 @@ def eval_checkpoint(path, bsz=4, force=False, gpu=None, group="all", tasks_overr
             print(f"[ERROR] custom eval failed: {e}")
         return
 
-    groups_to_run = []
-    if group == "all":
-        groups_to_run = ["base_retain", "chatbot", "advanced", "generative"]
-    elif group == "fast":
-        groups_to_run = ["base_retain", "chatbot", "advanced"]
-    else:
-        groups_to_run = [group]
+    # Map composite groups to their atomic sub-groups
+    GROUP_EXPAND = {
+        "all": ["base_retain", "chatbot", "advanced", "generative"],
+        "fast": ["base_retain", "chatbot", "advanced"],
+        "chatbot_deep": ["chatbot_core", "chatbot_extra"],
+    }
+    groups_to_run = GROUP_EXPAND.get(group, [group])
 
     for g in groups_to_run:
         if not force and is_eval_complete(log, ckpt_key, g):
@@ -401,12 +440,12 @@ def eval_baseline(model_name, bsz="auto", force=False, gpu=None, group="all"):
     if gpu is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
-    if group == "all":
-        groups_to_run = ["base_retain", "chatbot", "advanced", "generative"]
-    elif group == "fast":
-        groups_to_run = ["base_retain", "chatbot", "advanced"]
-    else:
-        groups_to_run = [group]
+    GROUP_EXPAND = {
+        "all": ["base_retain", "chatbot", "advanced", "generative"],
+        "fast": ["base_retain", "chatbot", "advanced"],
+        "chatbot_deep": ["chatbot_core", "chatbot_extra"],
+    }
+    groups_to_run = GROUP_EXPAND.get(group, [group])
 
     for g in groups_to_run:
         if not force and ckpt_key in log and log[ckpt_key].get(f"{g}_done"):
@@ -459,22 +498,33 @@ def generate_summary():
     lines.append("- **Base Retain** (lambada, hella, wino, piqa): 应与基座保持接近, 下降>2%说明过拟合")
     lines.append("- **Chatbot** (tqa_mc2, arc_c, mmlu, boolq): 指令遵循/推理, SFT 应提升或保持")
     lines.append("- **Advanced** (mmlu_pro, gpqa_d): 高难度知识推理")
+    lines.append("- **Chatbot Core** (siq, eth_u, eth_j, toxig, crows): 社交/情商/安全")
+    lines.append("- **Chatbot Extra** (csqa, sciq, logiq, anli3): 知识/推理/理解")
     lines.append("- **Generative** (gsm8k, ifeval, bbh): 生成式评测 (数学/指令遵循/推理)\n")
 
     # Build table
-    # Determine group boundaries
-    base_retain_tasks = [t for t in TASK_ORDER[:4] if t in all_present]
-    chatbot_tasks = [t for t in TASK_ORDER[4:8] if t in all_present]
-    advanced_tasks = [t for t in TASK_ORDER[8:10] if t in all_present]
-    generative_tasks = [t for t in TASK_ORDER[10:] if t in all_present]
+    # Determine group boundaries by task set membership
+    _base_retain_set = {"lambada_openai", "hellaswag", "winogrande", "piqa"}
+    _chatbot_set = {"truthfulqa_mc2", "arc_challenge", "mmlu", "boolq"}
+    _advanced_set = {"mmlu_pro", "gpqa_diamond_zeroshot"}
+    _chatbot_core_set = {"socialiqa", "ethics_utilitarianism", "ethics_justice", "toxigen", "crows_pairs_english"}
+    _chatbot_extra_set = {"commonsense_qa", "sciq", "logiqa2", "anli_r3"}
+    _generative_set = {"gsm8k", "ifeval", "bbh_zeroshot"}
+
+    base_retain_tasks = [t for t in ordered_tasks if t in _base_retain_set]
+    chatbot_tasks = [t for t in ordered_tasks if t in _chatbot_set]
+    advanced_tasks = [t for t in ordered_tasks if t in _advanced_set]
+    chatbot_core_tasks = [t for t in ordered_tasks if t in _chatbot_core_set]
+    chatbot_extra_tasks = [t for t in ordered_tasks if t in _chatbot_extra_set]
+    generative_tasks = [t for t in ordered_tasks if t in _generative_set]
 
     header = "| Model | Tokens |"
     separator = "|---|---|"
     for t in ordered_tasks:
         header += f" {COL_SHORT.get(t, t)} |"
         separator += "---|"
-    header += " base_avg | chat_avg | adv_avg | gen_avg | **total** |"
-    separator += "---|---|---|---|---|"
+    header += " base_avg | chat_avg | adv_avg | core_avg | extra_avg | gen_avg | **total** |"
+    separator += "---|---|---|---|---|---|---|"
 
     lines.append(header)
     lines.append(separator)
@@ -496,6 +546,8 @@ def generate_summary():
         base_vals = []
         chat_vals = []
         adv_vals = []
+        core_vals = []
+        extra_vals = []
         gen_vals = []
         for t in ordered_tasks:
             val = entry.get("results", {}).get(t)
@@ -516,6 +568,10 @@ def generate_summary():
                     chat_vals.append(val)
                 elif t in advanced_tasks:
                     adv_vals.append(val)
+                elif t in chatbot_core_tasks:
+                    core_vals.append(val)
+                elif t in chatbot_extra_tasks:
+                    extra_vals.append(val)
                 elif t in generative_tasks:
                     gen_vals.append(val)
             else:
@@ -524,10 +580,12 @@ def generate_summary():
         base_avg = sum(base_vals) / len(base_vals) if base_vals else 0
         chat_avg = sum(chat_vals) / len(chat_vals) if chat_vals else 0
         adv_avg = sum(adv_vals) / len(adv_vals) if adv_vals else 0
+        core_avg = sum(core_vals) / len(core_vals) if core_vals else 0
+        extra_avg = sum(extra_vals) / len(extra_vals) if extra_vals else 0
         gen_avg = sum(gen_vals) / len(gen_vals) if gen_vals else 0
-        all_vals = base_vals + chat_vals + adv_vals + gen_vals
+        all_vals = base_vals + chat_vals + adv_vals + core_vals + extra_vals + gen_vals
         total_avg = sum(all_vals) / len(all_vals) if all_vals else 0
-        row += f" {base_avg:.1f} | {chat_avg:.1f} | {adv_avg:.1f} | {gen_avg:.1f} | **{total_avg:.1f}** |"
+        row += f" {base_avg:.1f} | {chat_avg:.1f} | {adv_avg:.1f} | {core_avg:.1f} | {extra_avg:.1f} | {gen_avg:.1f} | **{total_avg:.1f}** |"
 
         lines.append(row)
 
