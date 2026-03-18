@@ -18,7 +18,6 @@ import sys
 import json
 import glob
 import argparse
-import numpy as np  # needed for eval() of np.float64(...)
 
 
 # 6 models to exclude
@@ -45,6 +44,8 @@ def parse_results_from_text(text):
         if line.startswith('{') or line.startswith("OrderedDict"):
             try:
                 cleaned = line.replace("OrderedDict(", "").rstrip(")")
+                # Strip numpy wrappers: np.float64(0.123) -> 0.123
+                cleaned = re.sub(r'np\.\w+\(([^)]+)\)', r'\1', cleaned)
                 parsed = eval(cleaned)
                 for task_name, task_results in parsed.items():
                     if isinstance(task_results, dict):

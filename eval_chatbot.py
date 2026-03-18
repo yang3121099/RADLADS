@@ -242,8 +242,9 @@ def _parse_lm_eval_results(stdout):
             continue
         if line.startswith('{') or line.startswith("OrderedDict"):
             try:
-                import numpy as np
                 text = line.replace("OrderedDict(", "").rstrip(")")
+                # Strip numpy wrappers: np.float64(0.123) -> 0.123
+                text = re.sub(r'np\.\w+\(([^)]+)\)', r'\1', text)
                 parsed = eval(text)
                 for task_name, task_results in parsed.items():
                     if isinstance(task_results, dict):
