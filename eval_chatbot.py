@@ -242,6 +242,7 @@ def _parse_lm_eval_results(stdout):
             continue
         if line.startswith('{') or line.startswith("OrderedDict"):
             try:
+                import numpy as np
                 text = line.replace("OrderedDict(", "").rstrip(")")
                 parsed = eval(text)
                 for task_name, task_results in parsed.items():
@@ -250,7 +251,7 @@ def _parse_lm_eval_results(stdout):
                                    'mc2,none', 'prompt_level_strict_acc,none',
                                    'inst_level_strict_acc,none']:
                             if k in task_results:
-                                results[task_name] = round(task_results[k] * 100, 2)
+                                results[task_name] = round(float(task_results[k]) * 100, 2)
                                 break
             except Exception:
                 pass
