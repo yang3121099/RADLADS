@@ -2,15 +2,21 @@
 """
 从 eval log 文件中解析 truthfulqa_mc2 + gpqa_diamond_zeroshot 结果，生成 markdown 汇总表格。
 
+直接从 log 文件解析结果，不依赖 eval_chatbot_results.json。
+支持 np.float64 等 numpy 格式。
+
 用法:
-    # 从 eval_logs/tqa_gpqa/ 目录下的 log 文件解析
+    # 扫描默认目录 (eval_logs/tqa_gpqa + eval_logs/chatbot)
     python collect_tqa_gpqa.py
 
     # 指定 log 目录
-    python collect_tqa_gpqa.py --logdir eval_logs/tqa_gpqa
+    python collect_tqa_gpqa.py --logdir eval_logs/chatbot
 
-    # 指定 log 目录 + 也扫描 eval_logs/chatbot
+    # 多个目录
     python collect_tqa_gpqa.py --logdir eval_logs/tqa_gpqa eval_logs/chatbot
+
+    # 也可以直接传入单个 log 文件
+    python collect_tqa_gpqa.py --logdir eval_logs/chatbot/some_model.log
 """
 import os
 import re
@@ -18,17 +24,6 @@ import sys
 import json
 import glob
 import argparse
-
-
-# 6 models to exclude
-EXCLUDE_BASENAMES = {
-    "L28-D3584-qwerky7_qwen2-6_chatbot_slimorca_rwkv-step1500-197M",
-    "L28-D3584-qwerky7_qwen2-6_chatbot_slimorca_rwkv-step150-20M",
-    "L28-D3584-qwerky7_qwen2-6_chatbot_openhermes_rwkv-step900-118M",
-    "L28-D3584-qwerky7_qwen2-6_chatbot_ultrachat_rwkv-step1500-197M",
-    "L28-D3584-qwerky7_qwen2-6_chatbot_ultrachat_rwkv-step150-20M",
-    "L28-D3584-qwerky7_qwen2-4_BOA_rwkv-1",
-}
 
 
 def parse_results_from_text(text):
@@ -55,22 +50,18 @@ def parse_results_from_text(text):
                             if k in task_results:
                                 results[task_name] = round(float(task_results[k]) * 100, 2)
                                 break
-            except Exception as e:
-                # Try regex fallback for partially broken lines
+            except Exception:
                 pass
 
-    # Regex fallback: extract individual metric values
+    # Regex fallback: extract individual metric values directly from text
     if not results:
-        # Pattern: 'acc,none': 0.328 or 'acc_norm,none': np.float64(0.328)
         for task in ['truthfulqa_mc2', 'gpqa_diamond_zeroshot']:
-            # Look for task dict block
             task_pattern = rf"'{task}':\s*\{{([^}}]+)\}}"
             m = re.search(task_pattern, text)
             if m:
                 block = m.group(1)
-                # Try acc_norm first, then acc, then mc2
                 for metric in ['acc_norm,none', 'acc,none', 'mc2,none']:
-                    val_pattern = rf"'{metric}':\s*(?:np\.float\d+\()?([\d.]+)\)?"
+                    val_pattern = rf"'{metric}':\s*(?:np\.\w+\()?([\d.]+)\)?"
                     vm = re.search(val_pattern, block)
                     if vm:
                         results[task] = round(float(vm.group(1)) * 100, 2)
@@ -80,33 +71,27 @@ def parse_results_from_text(text):
 
 
 def extract_model_info(logfile):
-    """Extract model directory and checkpoint name from log filename."""
-    basename = os.path.basename(logfile).replace('.log', '')
-
-    # Try to find the model path from log content
+    """Extract model directory and checkpoint name from log file content."""
+    # Try to find the model path from log content (--path argument)
     try:
         with open(logfile, 'r', errors='replace') as f:
-            head = f.read(2048)
+            head = f.read(4096)
         m = re.search(r'--path\s+(\S+)', head)
         if m:
             path = m.group(1)
             dirname = os.path.basename(os.path.dirname(path))
-            ckpt_name = os.path.basename(path).replace('.pth', '')
+            ckpt_name = os.path.basename(path).replace('.pth', '').replace('.safetensors', '')
             return dirname, ckpt_name, path
     except Exception:
         pass
 
-    # Fallback: parse from filename (format: dirname_ckptname.log)
-    # e.g. L28-D3584-qwerky7_qwen2-5_continue_rwkv-step150-20M.log
-    # This is tricky because dirname itself contains underscores
-    # Try to split on _rwkv-
+    # Fallback: parse from filename
+    basename = os.path.basename(logfile).replace('.log', '')
     parts = basename.split('_rwkv-')
     if len(parts) == 2:
-        dirname = parts[0]
-        ckpt_name = 'rwkv-' + parts[1]
-        return dirname, ckpt_name, ""
+        return parts[0], 'rwkv-' + parts[1], ""
 
-    return basename, "", ""
+    return basename, basename, ""
 
 
 def extract_step_label(ckpt_name):
@@ -123,9 +108,9 @@ def extract_step_label(ckpt_name):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Collect TQA+GPQA results from log files")
+    parser = argparse.ArgumentParser(description="Collect TQA+GPQA results from eval log files")
     parser.add_argument('--logdir', nargs='+', default=['eval_logs/tqa_gpqa', 'eval_logs/chatbot'],
-                        help='Log directories to scan (default: eval_logs/tqa_gpqa eval_logs/chatbot)')
+                        help='Log directories (or files) to scan')
     parser.add_argument('--out', default='eval_tqa_gpqa_summary.md',
                         help='Output markdown file (default: eval_tqa_gpqa_summary.md)')
     args = parser.parse_args()
@@ -133,7 +118,12 @@ def main():
     # Collect all log files
     log_files = []
     for d in args.logdir:
-        log_files.extend(glob.glob(os.path.join(d, '*.log')))
+        if os.path.isfile(d):
+            log_files.append(d)
+        elif os.path.isdir(d):
+            log_files.extend(glob.glob(os.path.join(d, '*.log')))
+        else:
+            print(f"[WARN] Not found: {d}")
     log_files = sorted(set(log_files))
 
     if not log_files:
@@ -143,15 +133,10 @@ def main():
     print(f"Found {len(log_files)} log files")
 
     # Parse each log file
-    entries = {}  # key -> {dirname, ckpt_name, step, label, truthfulqa_mc2, gpqa_diamond_zeroshot}
+    entries = {}
 
     for logfile in log_files:
         dirname, ckpt_name, path = extract_model_info(logfile)
-
-        # Check exclusion
-        log_basename = os.path.basename(logfile).replace('.log', '')
-        if log_basename in EXCLUDE_BASENAMES or f"{dirname}_{ckpt_name}" in EXCLUDE_BASENAMES:
-            continue
 
         try:
             with open(logfile, 'r', errors='replace') as f:
@@ -161,12 +146,11 @@ def main():
             continue
 
         results = parse_results_from_text(text)
-        if not results:
-            continue
 
         tqa = results.get('truthfulqa_mc2')
         gpqa = results.get('gpqa_diamond_zeroshot')
         if tqa is None and gpqa is None:
+            print(f"  [SKIP] No tqa/gpqa results in {os.path.basename(logfile)}")
             continue
 
         key = f"{dirname}/{ckpt_name}"
@@ -187,7 +171,8 @@ def main():
                 'truthfulqa_mc2': tqa,
                 'gpqa_diamond_zeroshot': gpqa,
             }
-            print(f"  [OK] {key}: tqa={tqa}, gpqa={gpqa}")
+
+        print(f"  [OK] {key}: tqa={tqa}, gpqa={gpqa}")
 
     if not entries:
         print("[WARN] No results found in any log files")
@@ -225,11 +210,9 @@ def main():
 
     md = "\n".join(lines) + "\n"
 
-    # Write file
     with open(args.out, 'w') as f:
         f.write(md)
 
-    # Print to stdout
     print()
     print(md)
     print(f"Summary saved to {args.out}")
