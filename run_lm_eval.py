@@ -5,6 +5,16 @@
 # pip install rwkv lm_eval --upgrade
 #
 import os, sys, types, json, math, time
+
+# Monkey-patch datasets.load_dataset to force trust_remote_code=True
+# Required for datasets>=3.0 which removed support for dataset loading scripts
+import datasets
+_original_load_dataset = datasets.load_dataset
+def _patched_load_dataset(*args, **kwargs):
+    kwargs.setdefault("trust_remote_code", True)
+    return _original_load_dataset(*args, **kwargs)
+datasets.load_dataset = _patched_load_dataset
+
 import numpy as np
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 
