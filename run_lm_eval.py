@@ -6,14 +6,26 @@
 #
 import os, sys, types, json, math, time
 
-# Monkey-patch datasets.load_dataset to force trust_remote_code=True
-# Required for datasets>=3.0 which removed support for dataset loading scripts
-import datasets
-_original_load_dataset = datasets.load_dataset
-def _patched_load_dataset(*args, **kwargs):
-    kwargs.setdefault("trust_remote_code", True)
-    return _original_load_dataset(*args, **kwargs)
-datasets.load_dataset = _patched_load_dataset
+# datasets>=3.0 completely removed loading-script support, breaking many
+# lm-eval benchmarks (social_iqa, commonsense_qa, sciq, logiqa, etc.).
+# Downgrade to datasets<3 before anything imports it.
+import subprocess as _sp
+try:
+    _ds_ver = _sp.run(
+        [sys.executable, "-c",
+         "import datasets; print(datasets.__version__)"],
+        capture_output=True, text=True
+    )
+    if _ds_ver.returncode == 0:
+        _major = int(_ds_ver.stdout.strip().split('.')[0])
+        if _major >= 3:
+            print("[INFO] datasets>=3.0 detected — downgrading to <3 for lm-eval compatibility...")
+            _sp.check_call(
+                [sys.executable, "-m", "pip", "install", "-q", "datasets>=2.18,<3"],
+            )
+except Exception:
+    pass
+del _sp
 
 import numpy as np
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
