@@ -202,6 +202,7 @@ def run_radlads_eval(path, tasks, bsz=1, env=None):
     if env is None:
         env = {**os.environ}
     env["PYTHONUNBUFFERED"] = "1"
+    env["HF_DATASETS_TRUST_REMOTE_CODE"] = "1"
 
     # Stream both stdout and stderr in real-time to log file, capture stdout for parsing
     import selectors
@@ -246,6 +247,7 @@ def run_hf_eval(model_name, tasks, bsz="auto", env=None):
     if env is None:
         env = {**os.environ}
     env["PYTHONUNBUFFERED"] = "1"
+    env["HF_DATASETS_TRUST_REMOTE_CODE"] = "1"
 
     import selectors
     stdout_lines = []
