@@ -24,7 +24,7 @@ Chatbot 模型测评脚本 — 全量 benchmark 评测
    - bbh_zeroshot      : Big-Bench Hard (23子任务, 生成+精确匹配)
 
 5. Chatbot 核心深度指标 (chatbot_core) — 社交/情商/安全 [loglikelihood, 快]:
-   - socialiqa              : 社交情境常识推理 (~2k题, 情绪/意图判断)
+   - social_iqa             : 社交情境常识推理 (~2k题, 情绪/意图判断)
    - ethics_utilitarianism  : 道德判断-功利主义 (~484题)
    - ethics_justice          : 道德判断-公正性 (~684题)
    - toxigen                 : 毒性检测 (~6.5k题)
@@ -33,7 +33,7 @@ Chatbot 模型测评脚本 — 全量 benchmark 评测
 6. Chatbot 扩展指标 (chatbot_extra) — 知识/推理/理解 [loglikelihood, 快]:
    - commonsense_qa  : 常识推理 5选1 (~1.2k题)
    - sciq            : 科学知识问答 4选1 (~1k题)
-   - logiqa2         : 逻辑推理 4选1 (~1.6k题)
+   - logiqa          : 逻辑推理 4选1 (~0.6k题)
    - anli_r3         : 对抗式自然语言推理 (~1k题)
 
 注: generative 组因 RWKV adapter 的 generate_until 为逐条生成，速度较慢。
@@ -74,11 +74,11 @@ TASK_GROUPS = {
     # 生成式评测 (generate_until, 慢)
     "generative": "gsm8k,ifeval,bbh_zeroshot",
     # Chatbot 核心深度 — 社交/情商/安全 (loglikelihood, 快)
-    "chatbot_core": "socialiqa,ethics_utilitarianism,ethics_justice,toxigen,crows_pairs_english",
+    "chatbot_core": "social_iqa,ethics_utilitarianism,ethics_justice,toxigen,crows_pairs_english",
     # Chatbot 扩展 — 知识/推理/理解 (loglikelihood, 快)
-    "chatbot_extra": "commonsense_qa,sciq,logiqa2,anli_r3",
+    "chatbot_extra": "commonsense_qa,sciq,logiqa,anli_r3",
     # chatbot_core + chatbot_extra 合并
-    "chatbot_deep": "socialiqa,ethics_utilitarianism,ethics_justice,toxigen,crows_pairs_english,commonsense_qa,sciq,logiqa2,anli_r3",
+    "chatbot_deep": "social_iqa,ethics_utilitarianism,ethics_justice,toxigen,crows_pairs_english,commonsense_qa,sciq,logiqa,anli_r3",
     # 快速全量 = base_retain + chatbot + advanced (全部 loglikelihood)
     "fast": "lambada_openai,hellaswag,winogrande,piqa,truthfulqa_mc2,arc_challenge,mmlu,boolq,mmlu_pro,gpqa_diamond_zeroshot",
     # 全量
@@ -110,7 +110,7 @@ COL_SHORT = {
     "ifeval": "ifeval",
     "bbh_zeroshot": "bbh",
     # chatbot_core (社交/安全)
-    "socialiqa": "siq",
+    "social_iqa": "siq",
     "ethics_utilitarianism": "eth_u",
     "ethics_justice": "eth_j",
     "toxigen": "toxig",
@@ -118,7 +118,7 @@ COL_SHORT = {
     # chatbot_extra (知识/推理)
     "commonsense_qa": "csqa",
     "sciq": "sciq",
-    "logiqa2": "logiq",
+    "logiqa": "logiq",
     "anli_r3": "anli3",
 }
 
@@ -131,9 +131,9 @@ TASK_ORDER = [
     # advanced (loglikelihood)
     "mmlu_pro", "gpqa_diamond_zeroshot",
     # chatbot_core — 社交/情商/安全 (loglikelihood)
-    "socialiqa", "ethics_utilitarianism", "ethics_justice", "toxigen", "crows_pairs_english",
+    "social_iqa", "ethics_utilitarianism", "ethics_justice", "toxigen", "crows_pairs_english",
     # chatbot_extra — 知识/推理/理解 (loglikelihood)
-    "commonsense_qa", "sciq", "logiqa2", "anli_r3",
+    "commonsense_qa", "sciq", "logiqa", "anli_r3",
     # generative (generate_until)
     "gsm8k", "ifeval", "bbh_zeroshot",
 ]
@@ -507,8 +507,8 @@ def generate_summary():
     _base_retain_set = {"lambada_openai", "hellaswag", "winogrande", "piqa"}
     _chatbot_set = {"truthfulqa_mc2", "arc_challenge", "mmlu", "boolq"}
     _advanced_set = {"mmlu_pro", "gpqa_diamond_zeroshot"}
-    _chatbot_core_set = {"socialiqa", "ethics_utilitarianism", "ethics_justice", "toxigen", "crows_pairs_english"}
-    _chatbot_extra_set = {"commonsense_qa", "sciq", "logiqa2", "anli_r3"}
+    _chatbot_core_set = {"social_iqa", "ethics_utilitarianism", "ethics_justice", "toxigen", "crows_pairs_english"}
+    _chatbot_extra_set = {"commonsense_qa", "sciq", "logiqa", "anli_r3"}
     _generative_set = {"gsm8k", "ifeval", "bbh_zeroshot"}
 
     base_retain_tasks = [t for t in ordered_tasks if t in _base_retain_set]

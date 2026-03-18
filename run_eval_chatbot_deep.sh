@@ -6,9 +6,9 @@
 # 2 GPUs × JOBS_PER_GPU 并行，自动跳过已完成。
 #
 # 任务分组:
-#   chatbot_core  : socialiqa, ethics_utilitarianism, ethics_justice,
+#   chatbot_core  : social_iqa, ethics_utilitarianism, ethics_justice,
 #                   toxigen, crows_pairs_english
-#   chatbot_extra : commonsense_qa, sciq, logiqa2, anli_r3
+#   chatbot_extra : commonsense_qa, sciq, logiqa, anli_r3
 #   chatbot_deep  : chatbot_core + chatbot_extra (全部)
 #
 # Usage:
